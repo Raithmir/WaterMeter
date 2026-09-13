@@ -38,6 +38,12 @@ globals:
   - id: found_byte8s
     type: std::vector<int>
     restore_value: false
+  - id: pending_ids
+    type: std::vector<std::string>
+    restore_value: false
+  - id: pending_rssis
+    type: std::vector<int>
+    restore_value: false
   - id: view_index
     type: int
     restore_value: false
@@ -102,13 +108,13 @@ wmbus_radio:
               id(best_set_ms) = now;
             }
 
-            // log to list: strong Diehl frames only
-            if (rssi >= -100 && diehl) {
+            // log to list: strong Diehl frames, but require two hits before committing
+            if (rssi >= -70 && diehl) {
               auto &ids = id(found_ids);
-              bool seen = false;
+              bool committed = false;
               for (size_t i = 0; i < ids.size(); i++) {
                 if (ids[i] == sid) {
-                  seen = true;
+                  committed = true;
                   if (rssi > id(found_rssis)[i]) {
                     id(found_rssis)[i] = rssi;
                     id(found_byte8s)[i] = d[8];
@@ -116,23 +122,43 @@ wmbus_radio:
                   break;
                 }
               }
-              if (!seen) {
-                ids.push_back(sid);
-                id(found_rssis).push_back(rssi);
-                id(found_byte8s).push_back(d[8]);
-                ESP_LOGI("survey", "NEW meter %s  %ddBm  b8=%02X  (total %d)",
-                         sid.c_str(), rssi, d[8], (int) ids.size());
-                std::string out;
-                for (size_t i = 0; i < ids.size(); i++) {
-                  char line[32];
-                  snprintf(line, sizeof(line), "%s:%d:%02X",
-                           ids[i].c_str(), id(found_rssis)[i], id(found_byte8s)[i]);
-                  if (i) out += ", ";
-                  out += line;
+              if (!committed) {
+                // not yet in the found list — check the pending (seen-once) list
+                auto &pids = id(pending_ids);
+                bool was_pending = false;
+                for (size_t i = 0; i < pids.size(); i++) {
+                  if (pids[i] == sid) {
+                    was_pending = true;
+                    // second hit — promote to the found list
+                    ids.push_back(sid);
+                    id(found_rssis).push_back(rssi > id(pending_rssis)[i] ? rssi : id(pending_rssis)[i]);
+                    id(found_byte8s).push_back(d[8]);
+                    pids.erase(pids.begin() + i);
+                    id(pending_rssis).erase(id(pending_rssis).begin() + i);
+                    ESP_LOGI("survey", "NEW meter %s  %ddBm  b8=%02X  (total %d)",
+                             sid.c_str(), rssi, d[8], (int) ids.size());
+                    std::string out;
+                    for (size_t j = 0; j < ids.size(); j++) {
+                      char line[32];
+                      snprintf(line, sizeof(line), "%s:%d:%02X",
+                               ids[j].c_str(), id(found_rssis)[j], id(found_byte8s)[j]);
+                      if (j) out += ", ";
+                      out += line;
+                    }
+                    id(found_list).publish_state(out);
+                    break;
+                  }
                 }
-                id(found_list).publish_state(out);
+                if (!was_pending) {
+                  // first hit — hold it in pending
+                  pids.push_back(sid);
+                  id(pending_rssis).push_back(rssi);
+                }
               }
             }
+        - logger.log:
+            format: "FRAME  RSSI: %ddBm  HEX: %s"
+            args: [ frame->rssi(), frame->as_hex().c_str() ]
 
 text_sensor:
   - platform: template
@@ -165,6 +191,8 @@ binary_sensor:
               id(found_ids).clear();
               id(found_rssis).clear();
               id(found_byte8s).clear();
+              id(pending_ids).clear();
+              id(pending_rssis).clear();
               id(view_index) = -1;
 
 switch:
