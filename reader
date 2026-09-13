@@ -17,7 +17,7 @@ logger:
 
 wifi:
   ssid: "Kulthea2"
-  password: "WIFI_PASSWORD"
+  password: "YOUR_WIFI_PASSWORD"
 
 api:
 
@@ -94,6 +94,13 @@ sensor:
     device_class: signal_strength
     unit_of_measurement: "dBm"
 
+  - platform: uptime
+    name: "Water Gateway Uptime"
+
+  - platform: wifi_signal
+    name: "Water Gateway WiFi Signal"
+    update_interval: 60s
+
 text_sensor:
   - platform: wmbus_meter
     parent_id: water_meter
@@ -110,6 +117,9 @@ text_sensor:
     parent_id: water_meter
     field: last_month_measure_date
     name: "Last Month Reading Date"
+
+  - platform: version
+    name: "Water Gateway ESPHome Version"
 
 binary_sensor:
   - platform: template
@@ -128,6 +138,19 @@ binary_sensor:
       if (!id(water_alarms).has_state()) return false;
       std::string s = id(water_alarms).state;
       return !s.empty() && s != "no_alarm";
+
+  - platform: template
+    id: water_stale
+    name: "Water Meter Stale"
+    device_class: problem
+    lambda: |-
+      if (id(last_telegram_ms) == 0) return false;
+      return (millis() - id(last_telegram_ms)) > 21600000;  // 6 hours
+
+interval:
+  - interval: 60s
+    then:
+      - component.update: water_stale
 
 switch:
   - platform: gpio
@@ -158,19 +181,11 @@ display:
     reset_pin: GPIO21
     update_interval: 1s
     lambda: |-
-      // ---- Top status bar: RSSI, age, battery ----
+      // ---- Top status bar ----
       if (id(water_rssi).has_state()) {
-        it.printf(0, 0, id(font_small), "%.0f", id(water_rssi).state);
-      }
-      if (id(last_telegram_ms) > 0) {
-        uint32_t age = (millis() - id(last_telegram_ms)) / 1000;
-        if (age < 90) {
-          it.printf(40, 0, id(font_small), "%lus", age);
-        } else if (age < 5400) {
-          it.printf(40, 0, id(font_small), "%lum", age / 60);
-        } else {
-          it.printf(40, 0, id(font_small), "%luh", age / 3600);
-        }
+        it.printf(0, 0, id(font_small), "%.0f dBm", id(water_rssi).state);
+      } else {
+        it.print(0, 0, id(font_small), "no signal");
       }
       if (id(water_battery).has_state()) {
         it.printf(127, 0, id(font_small), TextAlign::TOP_RIGHT,
@@ -185,7 +200,7 @@ display:
         it.print(0, 23, id(font_small), "Waiting for frame...");
       }
 
-      // ---- Bottom line: alarm banner, else last month ----
+      // ---- Bottom line: alarm banner, else freshness ----
       if (id(water_any_alarm).state) {
         if ((millis() / 1000) % 2 == 0) {
           it.filled_rectangle(0, 50, 128, 14);
@@ -195,8 +210,15 @@ display:
           it.print(64, 51, id(font_small), TextAlign::TOP_CENTER,
                    id(water_alarms).state.c_str());
         }
-      } else if (id(water_last_month).has_state()) {
-        it.printf(0, 51, id(font_small), "Last mo: %.3f", id(water_last_month).state);
+      } else if (id(last_telegram_ms) == 0) {
+        it.print(0, 51, id(font_small), "never seen");
       } else {
-        it.print(0, 51, id(font_small), "last mo: no data");
+        uint32_t age = (millis() - id(last_telegram_ms)) / 1000;
+        if (age < 90) {
+          it.printf(0, 51, id(font_small), "seen %lus ago", age);
+        } else if (age < 5400) {
+          it.printf(0, 51, id(font_small), "seen %lum ago", age / 60);
+        } else {
+          it.printf(0, 51, id(font_small), "seen %luh ago", age / 3600);
+        }
       }
