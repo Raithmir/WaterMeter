@@ -1,0 +1,219 @@
+esphome:
+  name: water-meter-survey
+  friendly_name: Water Meter Survey
+
+esp32:
+  board: heltec_wifi_lora_32_V3
+  framework:
+    type: esp-idf
+
+external_components:
+  - source: github://SzczepanLeon/esphome-components@main
+    components: [ wmbus_common, wmbus_radio ]
+
+logger:
+  level: INFO
+  baud_rate: 115200
+
+wifi:
+  ssid: "Kulthea2"
+  password: "YOUR_WIFI_PASSWORD"
+
+api:
+
+ota:
+  - platform: esphome
+
+globals:
+  - id: frame_count
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: found_ids
+    type: std::vector<std::string>
+    restore_value: false
+  - id: found_rssis
+    type: std::vector<int>
+    restore_value: false
+  - id: found_byte8s
+    type: std::vector<int>
+    restore_value: false
+  - id: view_index
+    type: int
+    restore_value: false
+    initial_value: '-1'
+  - id: best_id
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: best_rssi
+    type: int
+    restore_value: false
+    initial_value: '-200'
+  - id: best_is_sap
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: best_byte8
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: best_set_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+spi:
+  clk_pin: GPIO9
+  mosi_pin: GPIO10
+  miso_pin: GPIO11
+
+wmbus_radio:
+  radio_type: SX1262
+  cs_pin: GPIO8
+  reset_pin: GPIO12
+  busy_pin: GPIO13
+  irq_pin: GPIO14
+  rx_gain: BOOSTED
+  rf_switch: true
+  has_tcxo: true
+  on_frame:
+    - then:
+        - lambda: |-
+            auto d = frame->data();
+            if (d.size() < 10) return;
+            id(frame_count) += 1;
+            int rssi = frame->rssi();
+            uint16_t m = d[2] | (d[3] << 8);
+            bool diehl = (m == 0x4C30);
+            uint32_t now = millis();
+
+            char buf[9];
+            snprintf(buf, sizeof(buf), "%02X%02X%02X%02X", d[7], d[6], d[5], d[4]);
+            std::string sid(buf);
+
+            // live strongest (expires after 5s so moving hands over)
+            if (now - id(best_set_ms) > 5000) id(best_rssi) = -200;
+            if (rssi >= id(best_rssi)) {
+              id(best_id) = sid;
+              id(best_rssi) = rssi;
+              id(best_is_sap) = diehl;
+              id(best_byte8) = d[8];
+              id(best_set_ms) = now;
+            }
+
+            // log to list: strong Diehl frames only
+            if (rssi >= -100 && diehl) {
+              auto &ids = id(found_ids);
+              bool seen = false;
+              for (size_t i = 0; i < ids.size(); i++) {
+                if (ids[i] == sid) {
+                  seen = true;
+                  if (rssi > id(found_rssis)[i]) {
+                    id(found_rssis)[i] = rssi;
+                    id(found_byte8s)[i] = d[8];
+                  }
+                  break;
+                }
+              }
+              if (!seen) {
+                ids.push_back(sid);
+                id(found_rssis).push_back(rssi);
+                id(found_byte8s).push_back(d[8]);
+                ESP_LOGI("survey", "NEW meter %s  %ddBm  b8=%02X  (total %d)",
+                         sid.c_str(), rssi, d[8], (int) ids.size());
+                std::string out;
+                for (size_t i = 0; i < ids.size(); i++) {
+                  char line[32];
+                  snprintf(line, sizeof(line), "%s:%d:%02X",
+                           ids[i].c_str(), id(found_rssis)[i], id(found_byte8s)[i]);
+                  if (i) out += ", ";
+                  out += line;
+                }
+                id(found_list).publish_state(out);
+              }
+            }
+
+text_sensor:
+  - platform: template
+    id: found_list
+    name: "Survey Found Meters"
+
+binary_sensor:
+  - platform: gpio
+    id: prg_button
+    internal: true
+    pin:
+      number: GPIO0
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    on_click:
+      - min_length: 50ms
+        max_length: 800ms
+        then:
+          - lambda: |-
+              int n = id(found_ids).size();
+              if (n == 0) { id(view_index) = -1; return; }
+              id(view_index) += 1;
+              if (id(view_index) >= n) id(view_index) = -1;
+      - min_length: 1000ms
+        max_length: 5000ms
+        then:
+          - lambda: |-
+              id(found_ids).clear();
+              id(found_rssis).clear();
+              id(found_byte8s).clear();
+              id(view_index) = -1;
+
+switch:
+  - platform: gpio
+    id: vext_power
+    pin:
+      number: GPIO36
+      inverted: true
+    restore_mode: ALWAYS_ON
+    internal: true
+
+i2c:
+  sda: GPIO17
+  scl: GPIO18
+  scan: true
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 12
+  - file: "gfonts://Roboto"
+    id: font_med
+    size: 18
+
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 128x64"
+    address: 0x3C
+    reset_pin: GPIO21
+    update_interval: 500ms
+    lambda: |-
+      int n = id(found_ids).size();
+      it.printf(0, 0, id(font_small), "Found: %d", n);
+      it.printf(127, 0, id(font_small), TextAlign::TOP_RIGHT, "#%d", id(frame_count));
+
+      if (id(view_index) < 0) {
+        uint32_t age = (millis() - id(best_set_ms)) / 1000;
+        if (id(best_rssi) > -200 && age < 8) {
+          it.printf(0, 16, id(font_med), "%s", id(best_id).c_str());
+          it.printf(0, 44, id(font_small), "%d dBm  %s  b8=%02X",
+                    id(best_rssi), id(best_is_sap) ? "Diehl" : "other", id(best_byte8));
+        } else {
+          it.print(0, 24, id(font_small), "Move to a meter...");
+        }
+      } else {
+        int i = id(view_index);
+        if (i < n) {
+          it.printf(0, 16, id(font_med), "%s", id(found_ids)[i].c_str());
+          it.printf(0, 44, id(font_small), "%d/%d  %d dBm  b8=%02X",
+                    i + 1, n, id(found_rssis)[i], id(found_byte8s)[i]);
+        }
+      }
