@@ -33,6 +33,14 @@ globals:
     type: uint32_t
     restore_value: false
     initial_value: '0'
+  - id: display_page
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: display_on
+    type: bool
+    restore_value: false
+    initial_value: 'true'
 
 spi:
   clk_pin: GPIO9
@@ -95,9 +103,11 @@ sensor:
     unit_of_measurement: "dBm"
 
   - platform: uptime
+    id: sys_uptime
     name: "Water Gateway Uptime"
 
   - platform: wifi_signal
+    id: wifi_rssi
     name: "Water Gateway WiFi Signal"
     update_interval: 60s
 
@@ -111,6 +121,7 @@ text_sensor:
   - platform: wmbus_meter
     parent_id: water_meter
     field: previous_alarms
+    id: water_alarms_prev
     name: "Water Meter Previous Alarms"
 
   - platform: wmbus_meter
@@ -147,6 +158,36 @@ binary_sensor:
       if (id(last_telegram_ms) == 0) return false;
       return (millis() - id(last_telegram_ms)) > 21600000;  // 6 hours
 
+  - platform: gpio
+    id: prg_button
+    internal: true
+    pin:
+      number: GPIO0
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    on_click:
+      - min_length: 50ms
+        max_length: 800ms
+        then:
+          - lambda: |-
+              if (!id(display_on)) {
+                // wake instead of paging if asleep
+                id(display_on) = true;
+                id(oled).turn_on();
+                return;
+              }
+              id(display_page) += 1;
+              if (id(display_page) > 2) id(display_page) = 0;
+      - min_length: 1000ms
+        max_length: 5000ms
+        then:
+          - lambda: |-
+              id(display_on) = !id(display_on);
+              if (id(display_on)) id(oled).turn_on();
+              else id(oled).turn_off();
+
 interval:
   - interval: 60s
     then:
@@ -176,49 +217,78 @@ font:
 
 display:
   - platform: ssd1306_i2c
+    id: oled
     model: "SSD1306 128x64"
     address: 0x3C
     reset_pin: GPIO21
     update_interval: 1s
     lambda: |-
-      // ---- Top status bar ----
-      if (id(water_rssi).has_state()) {
-        it.printf(0, 0, id(font_small), "%.0f dBm", id(water_rssi).state);
-      } else {
-        it.print(0, 0, id(font_small), "no signal");
-      }
-      if (id(water_battery).has_state()) {
-        it.printf(127, 0, id(font_small), TextAlign::TOP_RIGHT,
-                  "%.1fy", id(water_battery).state);
-      }
+      if (!id(display_on)) return;
 
-      // ---- Headline total ----
-      if (id(water_total).has_state()) {
-        it.printf(0, 17, id(font_big), "%.3f", id(water_total).state);
-        it.print(104, 27, id(font_small), "m3");
-      } else {
-        it.print(0, 23, id(font_small), "Waiting for frame...");
-      }
+      // ================= PAGE 0: main reading =================
+      if (id(display_page) == 0) {
+        if (id(water_rssi).has_state()) {
+          it.printf(0, 0, id(font_small), "%.0f dBm", id(water_rssi).state);
+        } else {
+          it.print(0, 0, id(font_small), "no signal");
+        }
+        if (id(water_battery).has_state()) {
+          it.printf(127, 0, id(font_small), TextAlign::TOP_RIGHT,
+                    "%.1fy", id(water_battery).state);
+        }
 
-      // ---- Bottom line: alarm banner, else freshness ----
-      if (id(water_any_alarm).state) {
-        if ((millis() / 1000) % 2 == 0) {
-          it.filled_rectangle(0, 50, 128, 14);
-          it.print(64, 51, id(font_small), COLOR_OFF, TextAlign::TOP_CENTER,
-                   id(water_leak).state ? "LEAK ALARM" : "METER FAULT");
+        if (id(water_total).has_state()) {
+          it.printf(0, 17, id(font_big), "%.3f", id(water_total).state);
+          it.print(104, 27, id(font_small), "m3");
         } else {
-          it.print(64, 51, id(font_small), TextAlign::TOP_CENTER,
-                   id(water_alarms).state.c_str());
+          it.print(0, 23, id(font_small), "Waiting for frame...");
         }
-      } else if (id(last_telegram_ms) == 0) {
-        it.print(0, 51, id(font_small), "never seen");
+
+        if (id(water_any_alarm).state) {
+          if ((millis() / 1000) % 2 == 0) {
+            it.filled_rectangle(0, 50, 128, 14);
+            it.print(64, 51, id(font_small), COLOR_OFF, TextAlign::TOP_CENTER,
+                     id(water_leak).state ? "LEAK ALARM" : "METER FAULT");
+          } else {
+            it.print(64, 51, id(font_small), TextAlign::TOP_CENTER,
+                     id(water_alarms).state.c_str());
+          }
+        } else if (id(last_telegram_ms) == 0) {
+          it.print(0, 51, id(font_small), "never seen");
+        } else {
+          uint32_t age = (millis() - id(last_telegram_ms)) / 1000;
+          if (age < 90) {
+            it.printf(0, 51, id(font_small), "seen %lus ago", age);
+          } else if (age < 5400) {
+            it.printf(0, 51, id(font_small), "seen %lum ago", age / 60);
+          } else {
+            it.printf(0, 51, id(font_small), "seen %luh ago", age / 3600);
+          }
+        }
+
+      // ================= PAGE 1: diagnostics =================
+      } else if (id(display_page) == 1) {
+        it.print(0, 0, id(font_small), "Diagnostics");
+
+        if (id(water_battery).has_state())
+          it.printf(0, 15, id(font_small), "Battery: %.1f y", id(water_battery).state);
+        if (id(water_rssi).has_state())
+          it.printf(0, 28, id(font_small), "Meter: %.0f dBm", id(water_rssi).state);
+        if (id(wifi_rssi).has_state())
+          it.printf(0, 41, id(font_small), "WiFi: %.0f dBm", id(wifi_rssi).state);
+        if (id(sys_uptime).has_state()) {
+          uint32_t up = (uint32_t) id(sys_uptime).state;
+          it.printf(0, 54, id(font_small), "Up: %luh %lum",
+                    up / 3600, (up % 3600) / 60);
+        }
+
+      // ================= PAGE 2: alarm history =================
       } else {
-        uint32_t age = (millis() - id(last_telegram_ms)) / 1000;
-        if (age < 90) {
-          it.printf(0, 51, id(font_small), "seen %lus ago", age);
-        } else if (age < 5400) {
-          it.printf(0, 51, id(font_small), "seen %lum ago", age / 60);
-        } else {
-          it.printf(0, 51, id(font_small), "seen %luh ago", age / 3600);
-        }
+        it.print(0, 0, id(font_small), "Alarm status");
+        it.printf(0, 16, id(font_small), "Now:  %s",
+                  id(water_alarms).has_state() ? id(water_alarms).state.c_str() : "-");
+        it.printf(0, 32, id(font_small), "Prev: %s",
+                  id(water_alarms_prev).has_state() ? id(water_alarms_prev).state.c_str() : "-");
+        it.printf(0, 50, id(font_small), "Total: %s",
+                  id(water_total).has_state() ? "live" : "no data");
       }
