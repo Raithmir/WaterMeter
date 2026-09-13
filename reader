@@ -1,0 +1,202 @@
+esphome:
+  name: water-meter-gateway
+  friendly_name: Water Meter Gateway
+
+esp32:
+  board: heltec_wifi_lora_32_V3
+  framework:
+    type: esp-idf
+
+external_components:
+  - source: github://SzczepanLeon/esphome-components@main
+    components: [ wmbus_common, wmbus_radio, wmbus_meter ]
+
+logger:
+  level: INFO
+  baud_rate: 115200
+
+wifi:
+  ssid: "Kulthea2"
+  password: "WIFI_PASSWORD"
+
+api:
+
+ota:
+  - platform: esphome
+
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+
+globals:
+  - id: last_telegram_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+spi:
+  clk_pin: GPIO9
+  mosi_pin: GPIO10
+  miso_pin: GPIO11
+
+wmbus_radio:
+  radio_type: SX1262
+  cs_pin: GPIO8
+  reset_pin: GPIO12
+  busy_pin: GPIO13
+  irq_pin: GPIO14
+  rx_gain: BOOSTED
+  rf_switch: true
+  has_tcxo: true
+
+wmbus_meter:
+  - id: water_meter
+    meter_id: 0x217e06c8
+    type: izar
+    mode:
+      - T1
+    on_telegram:
+      then:
+        - lambda: 'id(last_telegram_ms) = millis();'
+
+sensor:
+  - platform: wmbus_meter
+    parent_id: water_meter
+    field: total_m3
+    id: water_total
+    name: "Water Total"
+    unit_of_measurement: "m³"
+    device_class: water
+    state_class: total_increasing
+    accuracy_decimals: 3
+
+  - platform: wmbus_meter
+    parent_id: water_meter
+    field: last_month_total_m3
+    id: water_last_month
+    name: "Water Last Month Total"
+    unit_of_measurement: "m³"
+    accuracy_decimals: 3
+
+  - platform: wmbus_meter
+    parent_id: water_meter
+    field: remaining_battery_life_y
+    id: water_battery
+    name: "Water Meter Battery Life"
+    unit_of_measurement: "y"
+    accuracy_decimals: 1
+
+  - platform: wmbus_meter
+    parent_id: water_meter
+    field: rssi_dbm
+    id: water_rssi
+    name: "Water Meter RSSI"
+    device_class: signal_strength
+    unit_of_measurement: "dBm"
+
+text_sensor:
+  - platform: wmbus_meter
+    parent_id: water_meter
+    field: current_alarms
+    id: water_alarms
+    name: "Water Meter Alarms"
+
+  - platform: wmbus_meter
+    parent_id: water_meter
+    field: previous_alarms
+    name: "Water Meter Previous Alarms"
+
+  - platform: wmbus_meter
+    parent_id: water_meter
+    field: last_month_measure_date
+    name: "Last Month Reading Date"
+
+binary_sensor:
+  - platform: template
+    id: water_leak
+    name: "Water Leak"
+    device_class: problem
+    lambda: |-
+      if (!id(water_alarms).has_state()) return false;
+      return id(water_alarms).state.find("leakage") != std::string::npos;
+
+  - platform: template
+    id: water_any_alarm
+    name: "Water Meter Fault"
+    device_class: problem
+    lambda: |-
+      if (!id(water_alarms).has_state()) return false;
+      std::string s = id(water_alarms).state;
+      return !s.empty() && s != "no_alarm";
+
+switch:
+  - platform: gpio
+    id: vext_power
+    pin:
+      number: GPIO36
+      inverted: true
+    restore_mode: ALWAYS_ON
+    internal: true
+
+i2c:
+  sda: GPIO17
+  scl: GPIO18
+  scan: true
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 12
+  - file: "gfonts://Roboto"
+    id: font_big
+    size: 24
+
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 128x64"
+    address: 0x3C
+    reset_pin: GPIO21
+    update_interval: 1s
+    lambda: |-
+      // ---- Top status bar: RSSI, age, battery ----
+      if (id(water_rssi).has_state()) {
+        it.printf(0, 0, id(font_small), "%.0f", id(water_rssi).state);
+      }
+      if (id(last_telegram_ms) > 0) {
+        uint32_t age = (millis() - id(last_telegram_ms)) / 1000;
+        if (age < 90) {
+          it.printf(40, 0, id(font_small), "%lus", age);
+        } else if (age < 5400) {
+          it.printf(40, 0, id(font_small), "%lum", age / 60);
+        } else {
+          it.printf(40, 0, id(font_small), "%luh", age / 3600);
+        }
+      }
+      if (id(water_battery).has_state()) {
+        it.printf(127, 0, id(font_small), TextAlign::TOP_RIGHT,
+                  "%.1fy", id(water_battery).state);
+      }
+
+      // ---- Headline total ----
+      if (id(water_total).has_state()) {
+        it.printf(0, 17, id(font_big), "%.3f", id(water_total).state);
+        it.print(104, 27, id(font_small), "m3");
+      } else {
+        it.print(0, 23, id(font_small), "Waiting for frame...");
+      }
+
+      // ---- Bottom line: alarm banner, else last month ----
+      if (id(water_any_alarm).state) {
+        if ((millis() / 1000) % 2 == 0) {
+          it.filled_rectangle(0, 50, 128, 14);
+          it.print(64, 51, id(font_small), COLOR_OFF, TextAlign::TOP_CENTER,
+                   id(water_leak).state ? "LEAK ALARM" : "METER FAULT");
+        } else {
+          it.print(64, 51, id(font_small), TextAlign::TOP_CENTER,
+                   id(water_alarms).state.c_str());
+        }
+      } else if (id(water_last_month).has_state()) {
+        it.printf(0, 51, id(font_small), "Last mo: %.3f", id(water_last_month).state);
+      } else {
+        it.print(0, 51, id(font_small), "last mo: no data");
+      }
