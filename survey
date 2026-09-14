@@ -16,7 +16,7 @@ logger:
   baud_rate: 115200
 
 wifi:
-  ssid: "Kulthea2"
+  ssid: "YOUR_WIFI_SSID"
   password: "YOUR_WIFI_PASSWORD"
 
 api:
