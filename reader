@@ -102,6 +102,14 @@ sensor:
     device_class: signal_strength
     unit_of_measurement: "dBm"
 
+  - platform: wmbus_meter
+    parent_id: water_meter
+    field: transmit_period_s
+    id: water_tx_period
+    name: "Water Meter Transmit Period"
+    unit_of_measurement: "s"
+    accuracy_decimals: 0
+
   - platform: uptime
     id: sys_uptime
     name: "Water Gateway Uptime"
@@ -154,9 +162,6 @@ binary_sensor:
     id: water_stale
     name: "Water Meter Stale"
     device_class: problem
-    lambda: |-
-      if (id(last_telegram_ms) == 0) return false;
-      return (millis() - id(last_telegram_ms)) > 21600000;  // 6 hours
 
   - platform: gpio
     id: prg_button
@@ -173,7 +178,6 @@ binary_sensor:
         then:
           - lambda: |-
               if (!id(display_on)) {
-                // wake instead of paging if asleep
                 id(display_on) = true;
                 id(oled).turn_on();
                 return;
@@ -191,7 +195,12 @@ binary_sensor:
 interval:
   - interval: 60s
     then:
-      - component.update: water_stale
+      - lambda: |-
+          if (id(last_telegram_ms) == 0) {
+            id(water_stale).publish_state(false);
+          } else {
+            id(water_stale).publish_state((millis() - id(last_telegram_ms)) > 21600000);  // 6 hours
+          }
 
 switch:
   - platform: gpio
@@ -289,6 +298,6 @@ display:
                   id(water_alarms).has_state() ? id(water_alarms).state.c_str() : "-");
         it.printf(0, 32, id(font_small), "Prev: %s",
                   id(water_alarms_prev).has_state() ? id(water_alarms_prev).state.c_str() : "-");
-        it.printf(0, 50, id(font_small), "Total: %s",
-                  id(water_total).has_state() ? "live" : "no data");
+        it.printf(0, 50, id(font_small), "TX every: %s",
+                  id(water_tx_period).has_state() ? to_string((int) id(water_tx_period).state).c_str() : "-");
       }
