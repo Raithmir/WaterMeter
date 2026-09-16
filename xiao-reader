@@ -1,0 +1,190 @@
+esphome:
+  name: water-meter-gateway-xiao
+  friendly_name: Water Meter Gateway XIAO
+
+esp32:
+  board: seeed_xiao_esp32s3
+  variant: esp32s3
+  framework:
+    type: esp-idf
+
+external_components:
+  - source: github://SzczepanLeon/esphome-components@main
+    components: [ wmbus_common, wmbus_radio, wmbus_meter ]
+
+logger:
+  level: INFO
+  baud_rate: 115200
+
+wifi:
+  ssid: "YOUR_WIFI_SSID"
+  password: "YOUR_WIFI_PASSWORD"
+
+api:
+
+ota:
+  - platform: esphome
+
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+
+globals:
+  - id: last_telegram_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+# Wio-SX1262 RF switch receive enable (B2B connector).
+# Held high permanently; this is a receive-only gateway.
+output:
+  - platform: gpio
+    id: rf_rxen
+    pin: GPIO38
+  - platform: gpio
+    id: status_led
+    pin:
+      number: GPIO21
+      inverted: true
+
+switch:
+  - platform: output
+    id: rf_rxen_switch
+    output: rf_rxen
+    restore_mode: ALWAYS_ON
+    internal: true
+
+# Wio-SX1262 kit, B2B connector
+spi:
+  clk_pin: GPIO7
+  mosi_pin: GPIO9
+  miso_pin: GPIO8
+
+wmbus_radio:
+  radio_type: SX1262
+  cs_pin: GPIO41
+  reset_pin: GPIO42
+  busy_pin: GPIO40
+  irq_pin: GPIO39
+  rx_gain: BOOSTED
+  rf_switch: true
+  has_tcxo: true
+
+wmbus_meter:
+  - id: water_meter
+    meter_id: 0x217e06c8
+    type: izar
+    mode:
+      - T1
+    on_telegram:
+      then:
+        - lambda: 'id(last_telegram_ms) = millis();'
+        - output.turn_on: status_led
+        - delay: 200ms
+        - output.turn_off: status_led
+
+sensor:
+  - platform: wmbus_meter
+    parent_id: water_meter
+    field: total_m3
+    id: water_total
+    name: "Water Total"
+    unit_of_measurement: "m³"
+    device_class: water
+    state_class: total_increasing
+    accuracy_decimals: 3
+
+  - platform: wmbus_meter
+    parent_id: water_meter
+    field: last_month_total_m3
+    id: water_last_month
+    name: "Water Last Month Total"
+    unit_of_measurement: "m³"
+    accuracy_decimals: 3
+
+  - platform: wmbus_meter
+    parent_id: water_meter
+    field: remaining_battery_life_y
+    id: water_battery
+    name: "Water Meter Battery Life"
+    unit_of_measurement: "y"
+    accuracy_decimals: 1
+
+  - platform: wmbus_meter
+    parent_id: water_meter
+    field: rssi_dbm
+    id: water_rssi
+    name: "Water Meter RSSI"
+    device_class: signal_strength
+    unit_of_measurement: "dBm"
+
+  - platform: wmbus_meter
+    parent_id: water_meter
+    field: transmit_period_s
+    id: water_tx_period
+    name: "Water Meter Transmit Period"
+    unit_of_measurement: "s"
+    accuracy_decimals: 0
+
+  - platform: uptime
+    id: sys_uptime
+    name: "Water Gateway Uptime"
+
+  - platform: wifi_signal
+    id: wifi_rssi
+    name: "Water Gateway WiFi Signal"
+    update_interval: 60s
+
+text_sensor:
+  - platform: wmbus_meter
+    parent_id: water_meter
+    field: current_alarms
+    id: water_alarms
+    name: "Water Meter Alarms"
+
+  - platform: wmbus_meter
+    parent_id: water_meter
+    field: previous_alarms
+    id: water_alarms_prev
+    name: "Water Meter Previous Alarms"
+
+  - platform: wmbus_meter
+    parent_id: water_meter
+    field: last_month_measure_date
+    name: "Last Month Reading Date"
+
+  - platform: version
+    name: "Water Gateway ESPHome Version"
+
+binary_sensor:
+  - platform: template
+    id: water_leak
+    name: "Water Leak"
+    device_class: problem
+    lambda: |-
+      if (!id(water_alarms).has_state()) return false;
+      return id(water_alarms).state.find("leakage") != std::string::npos;
+
+  - platform: template
+    id: water_any_alarm
+    name: "Water Meter Fault"
+    device_class: problem
+    lambda: |-
+      if (!id(water_alarms).has_state()) return false;
+      std::string s = id(water_alarms).state;
+      return !s.empty() && s != "no_alarm";
+
+  - platform: template
+    id: water_stale
+    name: "Water Meter Stale"
+    device_class: problem
+
+interval:
+  - interval: 60s
+    then:
+      - lambda: |-
+          if (id(last_telegram_ms) == 0) {
+            id(water_stale).publish_state(false);
+          } else {
+            id(water_stale).publish_state((millis() - id(last_telegram_ms)) > 21600000);  // 6 hours
+          }
