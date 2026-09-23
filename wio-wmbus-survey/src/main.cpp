@@ -842,20 +842,21 @@ void driveFlush() {}
 bool driveReady() { return driveToHost; }
 bool driveWritable() { return false; }
 
+// Added even if the QSPI flash failed: the computer then shows a drive with no media, which
+// tells that apart from a firmware without the drive.
 void usbDriveInit() {
   usbDrive.setID("Seeed", "wM-Bus survey", "1.0");
-  usbDrive.setCapacity(flash.sectorCount(), 512);
+  usbDrive.setCapacity(qspiOk ? flash.sectorCount() : 4096, 512);
   usbDrive.setReadWriteCallback(driveRead, driveWrite, driveFlush);
   usbDrive.setReadyCallback(driveReady);
   usbDrive.setWritableCallback(driveWritable);
   usbDrive.setUnitReady(true);
   usbDrive.begin();
-  // USB enumerated before setup() ran, without the drive: reconnect so the computer sees it.
-  if (TinyUSBDevice.mounted()) {
-    TinyUSBDevice.detach();
-    delay(10);
-    TinyUSBDevice.attach();
-  }
+  // USB starts before setup(), so the computer may already have read the device description
+  // without the drive - even if it hasn't finished connecting yet. Always reconnect.
+  TinyUSBDevice.detach();
+  delay(20);
+  TinyUSBDevice.attach();
 }
 
 // Computer attached: write fresh files, then hand the drive over and stop writing to it.
@@ -1331,6 +1332,21 @@ void runCommand(char *c) {
     for (int i = 0; i < labelCount; i++)
       Serial.printf("%08lx,%s%s\n", (unsigned long)labels[i].id, labels[i].text, hasKey(labels[i]) ? ",key" : "");
     Serial.println("# end");
+  } else if (!strcmp(c, "s")) {
+    Serial.println("# status");
+    Serial.printf("build %s %s\n", __DATE__, __TIME__);
+    Serial.printf("qspi %s, jedec %06lx, %lu KB\n", qspiOk ? "ok" : "FAILED", (unsigned long)flash.getJEDECID(),
+                  (unsigned long)(flash.size() / 1024));
+    Serial.printf("ring %s: %lu blocks, snapshot %lu, next block %lu\n", ringOk ? "ok" : "off", (unsigned long)ringBlocks,
+                  (unsigned long)snapSeq, (unsigned long)snapNext);
+    Serial.printf("internal flash %s, meters %d, labels %d, log rows waiting %u+%u bytes\n", fsOk ? "ok" : "FAILED",
+                  meterCount, labelCount, (unsigned)historyLog.len, (unsigned)rawLog.len);
+    Serial.printf("usb mounted %d, drive %s\n", TinyUSBDevice.mounted(), driveToHost ? "with computer" : "held");
+    Serial.printf("gps chars %lu, sentences ok %lu bad %lu, sats %lu, fix %s, time %s\n",
+                  (unsigned long)gps.charsProcessed(), (unsigned long)gps.passedChecksum(),
+                  (unsigned long)gps.failedChecksum(), (unsigned long)gps.satellites.value(),
+                  gps.location.isValid() ? "yes" : "no", gpsTimeTrusted ? "trusted" : "not yet");
+    Serial.println("# end");
   } else if (!strcmp(c, "h")) {
     printLog(historyLog);
     Serial.println("# end");
@@ -1393,7 +1409,7 @@ void runCommand(char *c) {
     }
     Serial.printf("# key for %08lx: %s\n", (unsigned long)id, hexKey ? (l ? "set" : "NOT set") : "cleared");
   } else if (*c) {
-    Serial.println("# commands: d=dump  c=clear survey  l <id> [label]  L=list labels  k <id> [hexkey]  h=history"
+    Serial.println("# commands: s=status  d=dump  c=clear survey  l <id> [label]  L=list labels  k <id> [hexkey]  h=history"
                    "  r=raw telegrams  HCLEAR=delete history+raw  FORMAT=erase all");
   }
 }
@@ -1415,7 +1431,7 @@ void handleSerial() {
 void setup() {
   flashMutex = xSemaphoreCreateMutex();
   qspiOk = flash.begin();
-  if (qspiOk) usbDriveInit();
+  usbDriveInit();
   Serial.begin(115200);
   uint32_t t0 = millis();
   while (!Serial && millis() - t0 < 2000) delay(10);
@@ -1441,6 +1457,17 @@ void setup() {
 
   fsInit();
   sortMeters();
+  // Storage status for a moment, so problems show without a serial terminal.
+  char line[32];
+  oled.drawStr(0, 22, "built " __DATE__);
+  if (qspiOk) snprintf(line, sizeof(line), "flash ok %luK ring %lu", (unsigned long)(flash.size() / 1024),
+                       (unsigned long)ringBlocks);
+  else snprintf(line, sizeof(line), "FLASH FAIL id %06lx", (unsigned long)flash.getJEDECID());
+  oled.drawStr(0, 32, line);
+  snprintf(line, sizeof(line), "%d meters, %d labels", meterCount, labelCount);
+  oled.drawStr(0, 42, line);
+  oled.sendBuffer();
+  delay(2000);
   radioInit();
   beep(2000, 60);
   Serial.println("# wM-Bus T1 survey ready. Send 'help' for commands");

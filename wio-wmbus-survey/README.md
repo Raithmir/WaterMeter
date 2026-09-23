@@ -50,6 +50,7 @@ While a computer has the drive the tracker keeps receiving and saving the survey
 
 ## Serial (115200, line-based)
     pio device monitor
+- `s` status: build date, QSPI flash, save ring, USB drive, GPS reception
 - `d` dump table as CSV (label, mode T1/C1a/C1b, manufacturer, type, reading, alarms, UTC, lat, lon, spread)
 - `c` clear survey (labels and history kept)
 - `h` print history.csv, `r` print raw.csv (not while a computer has the drive: open the files there)
@@ -67,7 +68,7 @@ While a computer has the drive the tracker keeps receiving and saving the survey
 - `er` always climbs a little (random noise matching the sync word). If `ok` stays 0 while your meter is transmitting, compare with the Heltec
 - `# survey saved ... FAILED` on serial → send `c` or `FORMAT`
 - "QSPI error: small survey" on screen → the QSPI flash didn't start; the survey falls back to internal flash, which only has room for roughly 100 meters
-- No `WMBUS` drive → check it's a data cable; the drive only appears a few seconds after boot
+- No `WMBUS` drive → check it's a data cable; the drive only appears a few seconds after boot. The boot screen shows the build date and `flash ok` / `FLASH FAIL`; `s` on serial gives the details. With a flash failure Windows shows a removable disk with no media
 - Nothing at all → check `radio init failed` on serial
 - "no position yet" in detail view → that meter hasn't been heard since the GPS got a fix (the `S` number on the list view is satellites in view; first fix outdoors can take up to 15 min)
 - "flash error: no saving" → send `FORMAT`
