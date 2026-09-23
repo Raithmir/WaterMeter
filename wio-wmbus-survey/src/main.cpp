@@ -85,6 +85,15 @@ class LockedFlash : public Adafruit_SPIFlash {
   }
 };
 LockedFlash flash(&flashTransport);
+
+// JEDEC ID straight from the chip (the library reports ffffff for any chip it doesn't know).
+// 856015 = P25Q16H; 000000/ffffff = nothing answering.
+uint32_t chipJedecId() {
+  FlashLock l;
+  uint8_t id[3] = {0, 0, 0};
+  flashTransport.readCommand(0x9F, id, 3);
+  return (uint32_t)id[0] << 16 | id[1] << 8 | id[2];
+}
 FatVolume fatfs;
 Adafruit_USBD_MSC usbDrive;
 
@@ -1335,7 +1344,7 @@ void runCommand(char *c) {
   } else if (!strcmp(c, "s")) {
     Serial.println("# status");
     Serial.printf("build %s %s\n", __DATE__, __TIME__);
-    Serial.printf("qspi %s, jedec %06lx, %lu KB\n", qspiOk ? "ok" : "FAILED", (unsigned long)flash.getJEDECID(),
+    Serial.printf("qspi %s, jedec %06lx, %lu KB\n", qspiOk ? "ok" : "FAILED", (unsigned long)chipJedecId(),
                   (unsigned long)(flash.size() / 1024));
     Serial.printf("ring %s: %lu blocks, snapshot %lu, next block %lu\n", ringOk ? "ok" : "off", (unsigned long)ringBlocks,
                   (unsigned long)snapSeq, (unsigned long)snapNext);
@@ -1430,7 +1439,9 @@ void handleSerial() {
 // ---------- main ----------
 void setup() {
   flashMutex = xSemaphoreCreateMutex();
-  qspiOk = flash.begin();
+  // The P25Q16H isn't in the library's auto-detect list, so name it (from variant.h).
+  static const SPIFlash_Device_t qspiDevices[] = {EXTERNAL_FLASH_DEVICES};
+  qspiOk = flash.begin(qspiDevices, sizeof(qspiDevices) / sizeof(qspiDevices[0]));
   usbDriveInit();
   Serial.begin(115200);
   uint32_t t0 = millis();
@@ -1462,7 +1473,7 @@ void setup() {
   oled.drawStr(0, 22, "built " __DATE__);
   if (qspiOk) snprintf(line, sizeof(line), "flash ok %luK ring %lu", (unsigned long)(flash.size() / 1024),
                        (unsigned long)ringBlocks);
-  else snprintf(line, sizeof(line), "FLASH FAIL id %06lx", (unsigned long)flash.getJEDECID());
+  else snprintf(line, sizeof(line), "FLASH FAIL id %06lx", (unsigned long)chipJedecId());
   oled.drawStr(0, 32, line);
   snprintf(line, sizeof(line), "%d meters, %d labels", meterCount, labelCount);
   oled.drawStr(0, 42, line);
