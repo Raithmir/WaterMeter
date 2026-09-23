@@ -119,11 +119,11 @@ static int c1Tests() {
 int main() {
   uint8_t chk[] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
   printf("crc check 0x%04X (expect 0xC2B7)\n", crc16(chk, 9));
-  struct { const char *hex; uint32_t id; uint32_t litres; } v[] = {
-      {"1944304C72242421D401A2013D4013DD8B46A4999C1293E582CC", 0x21242472, 3488},
-      {"2944A511780729662366A20118001378D3B3DB8CEDD77731F25832AAF3DA8CADF9774EA673172E8C61F2", 0x66236629, 16760},
-      {"1944A511780779194820A121170013355F8EDB2D03C6912B1E37", 0x20481979, 4366},
-      {"1944304c9c5824210c04a363140013716577ec59e8663ab0d31c", 0x2124589c, 38944},
+  struct { const char *hex; uint32_t id; uint32_t litres, lastMonth, lastMonthDate, battHalfYears, period; } v[] = {
+      {"1944304C72242421D401A2013D4013DD8B46A4999C1293E582CC", 0x21242472, 3488, 3486, 20190930, 29, 8},
+      {"2944A511780729662366A20118001378D3B3DB8CEDD77731F25832AAF3DA8CADF9774EA673172E8C61F2", 0x66236629, 16760, 11840, 20191130, 24, 8},
+      {"1944A511780779194820A121170013355F8EDB2D03C6912B1E37", 0x20481979, 4366, 0, 20201231, 23, 8},
+      {"1944304c9c5824210c04a363140013716577ec59e8663ab0d31c", 0x2124589c, 38944, 38691, 20210201, 20, 32},
   };
   int fails = 0;
   for (auto &t : v) {
@@ -140,12 +140,43 @@ int main() {
     char at[40];
     wmbus::alarmText(izarAlarms(tg), at, sizeof(at));
     printf("  alarms: %s\n", at);
+    uint32_t lm = 0, lmDate = 0;
+    decodeIzar(tg, l, &lm, &lmDate);
+    bool extraOk = lm == t.lastMonth && lmDate == t.lastMonthDate && izarBatteryHalfYears(tg) == t.battHalfYears &&
+                   izarPeriodS(tg) == t.period;
+    printf("  last month: %u l on %u  battery: %.1f y  period: %u s %s\n", lm, lmDate,
+           izarBatteryHalfYears(tg) / 2.0, izarPeriodS(tg), extraOk ? "PASS" : "FAIL");
+    fails += !extraOk;
     fails += !ok;
     raw[3] ^= 0x10;  // corrupt -> must not decode OK
     Result r2 = decode(raw.data(), raw.size(), tg, mode);
     if (r2 == Result::OK) { printf("  corruption not detected!\n"); fails++; }
   }
   fails += c1Tests();
+  {
+    // C1 format B, L=128 (129 bytes): first CRC valid, second block empty. Must be rejected, not overrun.
+    std::vector<uint8_t> raw(255, 0xAA);
+    raw[0] = 0x54; raw[1] = 0x3D; raw[2] = 128;
+    uint16_t c = crc16(&raw[2], 126);
+    raw[2 + 126] = c >> 8; raw[2 + 127] = c & 0xFF;
+    Telegram tg;
+    Mode mode;
+    Result r = decode(raw.data(), raw.size(), tg, mode);
+    bool ok = r != Result::OK;
+    printf("C1 B len=129 edge res=%s %s\n", resultStr(r), ok ? "PASS" : "FAIL");
+    fails += !ok;
+  }
+  // Sensus iPERL default-key decrypt test using real telegram from wmbusmeters#878
+  // Telegram (CRCs stripped): 1E44AE4C6478842068077A89001005C6FD4FAA63F85837E5CC1B3EC6D0DB3B
+  {
+    auto raw = c1Air(hex("1E44AE4C6478842068077A89001005C6FD4FAA63F85837E5CC1B3EC6D0DB3B"), false);
+    Telegram t; Mode m; Result r = decode(raw.data(), raw.size(), t, m);
+    uint32_t l = 0;
+    bool ok = r == Result::OK && t.id() == 0x20847864 && decodeSensus(t, l) && l == 623823;
+    char mf[4]; t.mfct(mf);
+    printf("Sensus iPERL id=%08x %s litres=%u %s\n", t.id(), mf, l, ok ? "PASS" : "FAIL");
+    fails += !ok;
+  }
   printf("%s\n", fails ? "FAILURES" : "ALL PASS");
   return fails;
 }

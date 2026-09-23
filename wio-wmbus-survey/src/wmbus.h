@@ -1,3 +1,4 @@
+#include "aes128.h"
 // wM-Bus T1 (3-of-6, frame format A) and C1 (NRZ, frame format A or B) decoder,
 // plus Diehl IZAR/PRIOS payload decode and OMS device type names.
 // Plain C++, no Arduino dependencies, so it can be unit-tested on a PC.
@@ -145,6 +146,7 @@ inline Result decodeT1(const uint8_t *raw, size_t rawLen, Telegram &t) {
 // (or the whole frame if shorter), and a second CRC over the remainder for long frames.
 inline Result stripFormatB(const uint8_t *buf, size_t len, Telegram &t) {
   if (len < 12) return Result::TOO_SHORT;
+  if (len > 128 && len < 131) return Result::TOO_SHORT;  // second block would have no data
   size_t crc1 = len <= 128 ? len - 2 : 126;
   uint16_t c = crc16(buf, crc1);
   if (buf[crc1] != (c >> 8) || buf[crc1 + 1] != (c & 0xFF)) return Result::BAD_CRC;
@@ -204,8 +206,10 @@ inline bool isDiehl(const Telegram &t) {
   return !strcmp(m, "SAP") || !strcmp(m, "DME") || !strcmp(m, "HYD") || !strcmp(m, "EWT");
 }
 
-// On success writes total litres (and last-month litres, if present).
-inline bool decodeIzar(const Telegram &t, uint32_t &litres, uint32_t *lastMonth = nullptr) {
+// On success writes total litres, and if present the reading at the start of the month and
+// that reading's date as YYYYMMDD (outputs left untouched when the frame is too short).
+inline bool decodeIzar(const Telegram &t, uint32_t &litres, uint32_t *lastMonth = nullptr,
+                       uint32_t *lastMonthDate = nullptr) {
   if (t.len < 20 || !isDiehl(t)) return false;
   for (uint32_t key : PRIOS_KEYS) {
     key ^= be32(t.data + 2);
@@ -225,6 +229,11 @@ inline bool decodeIzar(const Telegram &t, uint32_t &litres, uint32_t *lastMonth 
     if (!ok || size < 5) continue;
     litres = dec[1] | dec[2] << 8 | dec[3] << 16 | (uint32_t)dec[4] << 24;
     if (lastMonth && size >= 9) *lastMonth = dec[5] | dec[6] << 8 | dec[7] << 16 | (uint32_t)dec[8] << 24;
+    if (lastMonthDate && size >= 11) {  // "h0" date, as in wmbusmeters driver_izar
+      uint32_t y = ((dec[10] & 0xF0) >> 1) + ((dec[9] & 0xE0) >> 5);
+      y += y > 80 ? 1900 : 2000;
+      *lastMonthDate = y * 10000 + (dec[10] & 0x0F) * 100 + (dec[9] & 0x1F);
+    }
     return true;
   }
   return false;
@@ -244,7 +253,13 @@ enum : uint16_t {
   ALM_SENSOR_FRAUD_PREV = 1 << 9,
   ALM_MECH_FRAUD_NOW = 1 << 10,
   ALM_MECH_FRAUD_PREV = 1 << 11,
+  ALM_POWER_LOW = 1 << 12,  // OMS status byte (Sensus etc.)
+  ALM_ERROR = 1 << 13,      // OMS status byte: permanent or temporary error
 };
+
+// Plain header fields, per wmbusmeters driver_izar. Only meaningful when decodeIzar() succeeded.
+inline uint8_t izarBatteryHalfYears(const Telegram &t) { return t.len > 12 ? t.data[12] & 0x1F : 0; }
+inline uint32_t izarPeriodS(const Telegram &t) { return t.len > 11 ? 1UL << ((t.data[11] & 0x0F) + 2) : 0; }
 
 // Only meaningful when decodeIzar() succeeded for this telegram.
 inline uint16_t izarAlarms(const Telegram &t) {
@@ -273,6 +288,7 @@ inline void alarmText(uint16_t f, char *out, size_t n) {
       {ALM_OVERFLOW, "over"},        {ALM_UNDERFLOW, "under"},   {ALM_SUBMARINE, "submerged"},
       {ALM_SENSOR_FRAUD_NOW, "tamperS"}, {ALM_MECH_FRAUD_NOW, "tamperM"}, {ALM_LEAK_PREV, "leak(was)"},
       {ALM_SENSOR_FRAUD_PREV, "tamperS(was)"}, {ALM_MECH_FRAUD_PREV, "tamperM(was)"},
+      {ALM_POWER_LOW, "battLow"},    {ALM_ERROR, "error"},
   };
   out[0] = 0;
   size_t used = 0;
@@ -307,6 +323,65 @@ inline void deviceType(uint8_t t, const char *&shortName, const char *&longName)
     if (e.code == t) { shortName = e.s; longName = e.l; return; }
   shortName = "?";
   longName = "unknown type";
+}
+
+// ---- Sensus iPERL default key (public; most utilities do not change it) ----
+static const uint8_t SENSUS_DEFAULT_KEY[16] = {
+  0xE6,0xC8,0x88,0x00,0xDE,0xB8,0x68,0xC0,
+  0xD6,0xA8,0x48,0x80,0xCE,0x98,0x28,0x40,
+};
+
+// wM-Bus mode 5 (AES-128-CBC-IV) decrypt.
+// Returns plaintext byte count (always nb*16), or 0 if wrong key (2F2F check fails).
+inline size_t decryptMode5(const Telegram &t, const uint8_t key[16], uint8_t *plain) {
+  if (t.len < 15 || t.data[10] != 0x7A) return 0;
+  uint8_t secMode = t.data[14] & 0x1F;
+  if (secMode != 5) return 0;
+  uint8_t nb = (t.data[13] >> 4) & 0x0F;
+  if (nb == 0 || (size_t)(15 + nb * 16) > t.len) return 0;
+  uint8_t iv[16];
+  memcpy(iv, t.data + 2, 2);
+  memcpy(iv + 2, t.data + 4, 4);
+  iv[6] = t.data[8];
+  iv[7] = t.data[9];
+  memset(iv + 8, t.data[11], 8);
+  aes128::cbcDecrypt(key, iv, t.data + 15, plain, nb);
+  if (plain[0] != 0x2F || plain[1] != 0x2F) return 0;
+  return nb * 16;
+}
+
+// Parse volume in litres from decrypted wM-Bus DIF/VIF records.
+inline bool parseVolumeRecord(const uint8_t *data, size_t len, uint32_t &litres) {
+  for (size_t i = 2; i + 5 < len; i++) {
+    if (data[i] == 0x2F) continue;
+    if (data[i] == 0x04 && data[i+1] == 0x13) {
+      litres = (uint32_t)data[i+2] | (uint32_t)data[i+3]<<8 |
+               (uint32_t)data[i+4]<<16 | (uint32_t)data[i+5]<<24;
+      return true;
+    }
+    break;
+  }
+  return false;
+}
+
+// Try to decode a Sensus iPERL telegram. key=nullptr uses the public default.
+inline bool decodeSensus(const Telegram &t, uint32_t &litres,
+                         const uint8_t *key = nullptr) {
+  uint8_t plain[256];
+  size_t n = decryptMode5(t, key ? key : SENSUS_DEFAULT_KEY, plain);
+  if (!n) return false;
+  return parseVolumeRecord(plain, n, litres);
+}
+
+// Standard OMS status byte (t.data[12] for CI=0x7A, EN 13757-7): bit 2 power low,
+// bit 3 permanent error, bit 4 temporary error. Returned as ALM_* flags.
+inline uint16_t omsStatusAlarms(const Telegram &t) {
+  if (t.len < 13 || t.data[10] != 0x7A) return 0;
+  uint8_t st = t.data[12];
+  uint16_t f = 0;
+  if (st & 0x04) f |= ALM_POWER_LOW;
+  if (st & 0x18) f |= ALM_ERROR;
+  return f;
 }
 
 }  // namespace wmbus
