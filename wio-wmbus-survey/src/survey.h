@@ -35,8 +35,8 @@ struct Meter {
   bool hasIzarInfo;
   uint8_t battHalfYears;     // remaining battery life, half years
   uint32_t periodS;          // transmit interval
-  uint32_t lastMonthLitres;  // reading at the start of the month (0 = unknown)
-  uint32_t lastMonthDate;    // YYYYMMDD of that reading (0 = unknown)
+  uint32_t billingLitres;  // reading on the billing date (0 = unknown)
+  uint32_t billingDate;    // YYYYMMDD billing date (0 = unknown or not reached)
   // log state, saved so a reboot mid-walk doesn't log meters twice
   uint32_t loggedUtc;        // last history.csv row
   uint16_t loggedAlarms;     // alarms in that row
@@ -160,9 +160,9 @@ inline bool historyDue(const Meter &m, uint32_t now) {
 // already free of commas and quotes (main.cpp's setLabel), and no other field can hold one.
 static const char SURVEY_HEADER[] =
     "id,label,mode,mfct,type,ver,litres,alarms,rssi,best_rssi,count,utc,lat,lon,spread_m,samples,"
-    "last_month_litres,last_month_date,battery_years,period_s";
+    "billing_litres,billing_date,battery_years,period_s";
 static const char HISTORY_HEADER[] =
-    "utc,id,label,mfct,type,litres,last_month_litres,last_month_date,alarms,battery_years,rssi";
+    "utc,id,label,mfct,type,litres,billing_litres,billing_date,alarms,battery_years,rssi";
 static const char RAW_HEADER[] = "utc,id,label,mode,mfct,type,rssi,telegram";
 
 // Keeps appending after a truncated write without running past the end.
@@ -179,10 +179,10 @@ struct Out {
   void s(const char *str) { f("%s", str); }
 };
 
-inline void lastMonthCols(Out &o, const Meter &m) {
-  if (m.hasIzarInfo && m.lastMonthDate)
-    o.f("%lu,%04lu-%02lu-%02lu", (unsigned long)m.lastMonthLitres, (unsigned long)(m.lastMonthDate / 10000),
-        (unsigned long)(m.lastMonthDate / 100 % 100), (unsigned long)(m.lastMonthDate % 100));
+inline void billingCols(Out &o, const Meter &m) {
+  if (m.hasIzarInfo && m.billingDate)
+    o.f("%lu,%04lu-%02lu-%02lu", (unsigned long)m.billingLitres, (unsigned long)(m.billingDate / 10000),
+        (unsigned long)(m.billingDate / 100 % 100), (unsigned long)(m.billingDate % 100));
   else
     o.s(",");
 }
@@ -208,7 +208,7 @@ inline size_t surveyRow(char *out, size_t n, const Meter &m, const char *label) 
   else o.s(",,,0");
   o.s(",");
   if (m.hasIzarInfo) {
-    lastMonthCols(o, m);
+    billingCols(o, m);
     o.f(",%.1f,%lu", m.battHalfYears / 2.0, (unsigned long)m.periodS);
   } else {
     o.s(",,,");
@@ -229,7 +229,7 @@ inline size_t historyRow(char *out, size_t n, const Meter &m, const char *label,
     wmbus::alarmText(m.alarms, at, sizeof(at));
   }
   o.s(",");
-  lastMonthCols(o, m);
+  billingCols(o, m);
   o.f(",%s,", at);
   if (m.hasIzarInfo) o.f("%.1f", m.battHalfYears / 2.0);
   o.f(",%d", m.lastRssi);

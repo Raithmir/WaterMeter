@@ -206,10 +206,11 @@ inline bool isDiehl(const Telegram &t) {
   return !strcmp(m, "SAP") || !strcmp(m, "DME") || !strcmp(m, "HYD") || !strcmp(m, "EWT");
 }
 
-// On success writes total litres, and if present the reading at the start of the month and
-// that reading's date as YYYYMMDD (outputs left untouched when the frame is too short).
-inline bool decodeIzar(const Telegram &t, uint32_t &litres, uint32_t *lastMonth = nullptr,
-                       uint32_t *lastMonthDate = nullptr) {
+// On success writes total litres, and if present the reading stored on the billing date the
+// utility configured (wmbusmeters calls it "last month"; 31 Dec on some meters) and that date as
+// YYYYMMDD, or 0 before the meter's first billing date (outputs left untouched when the frame is too short).
+inline bool decodeIzar(const Telegram &t, uint32_t &litres, uint32_t *billing = nullptr,
+                       uint32_t *billingDate = nullptr) {
   if (t.len < 20 || !isDiehl(t)) return false;
   for (uint32_t key : PRIOS_KEYS) {
     key ^= be32(t.data + 2);
@@ -228,11 +229,15 @@ inline bool decodeIzar(const Telegram &t, uint32_t &litres, uint32_t *lastMonth 
     }
     if (!ok || size < 5) continue;
     litres = dec[1] | dec[2] << 8 | dec[3] << 16 | (uint32_t)dec[4] << 24;
-    if (lastMonth && size >= 9) *lastMonth = dec[5] | dec[6] << 8 | dec[7] << 16 | (uint32_t)dec[8] << 24;
-    if (lastMonthDate && size >= 11) {  // "h0" date, as in wmbusmeters driver_izar
+    if (billing && size >= 9) *billing = dec[5] | dec[6] << 8 | dec[7] << 16 | (uint32_t)dec[8] << 24;
+    if (billingDate && size >= 11) {  // "h0" date, as in wmbusmeters driver_izar
       uint32_t y = ((dec[10] & 0xF0) >> 1) + ((dec[9] & 0xE0) >> 5);
-      y += y > 80 ? 1900 : 2000;
-      *lastMonthDate = y * 10000 + (dec[10] & 0x0F) * 100 + (dec[9] & 0x1F);
+      if (y == 0) {
+        *billingDate = 0;  // not reached yet: the meter reports 0 l on 2000-12-31
+      } else {
+        y += y > 80 ? 1900 : 2000;
+        *billingDate = y * 10000 + (dec[10] & 0x0F) * 100 + (dec[9] & 0x1F);
+      }
     }
     return true;
   }

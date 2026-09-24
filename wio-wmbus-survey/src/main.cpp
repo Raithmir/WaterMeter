@@ -838,18 +838,18 @@ void handlePacket() {
 
   // Save-worthy state before this telegram (signal, count and times alone don't warrant a save).
   bool isNewMeter = m.count == 0;
-  uint32_t prevLitres = m.litres, prevLastMonth = m.lastMonthLitres;
+  uint32_t prevLitres = m.litres, prevBilling = m.billingLitres;
   int16_t prevBest = m.bestRssi;
-  uint32_t l, lastMonth = 0, lastMonthDate = 0;
+  uint32_t l, billing = 0, billingDate = 0;
   uint16_t prevAlarms = m.alarms;
   char mfct4[4]; t.mfct(mfct4);
-  if (wmbus::decodeIzar(t, l, &lastMonth, &lastMonthDate)) {
+  if (wmbus::decodeIzar(t, l, &billing, &billingDate)) {
     m.litres = l;
     m.hasLitres = true;
     m.alarms = wmbus::izarAlarms(t);
     m.hasIzarInfo = true;
-    m.lastMonthLitres = lastMonth;
-    m.lastMonthDate = lastMonthDate;
+    m.billingLitres = billing;
+    m.billingDate = billingDate;
     m.battHalfYears = wmbus::izarBatteryHalfYears(t);
     m.periodS = wmbus::izarPeriodS(t);
   } else if (strcmp(mfct4, "SEN") == 0) {
@@ -873,7 +873,7 @@ void handlePacket() {
   if (!m.hasLitres) logRaw(m, t, now);
   bool sampled = addSample(m, rssi);
   if (isNewMeter || sampled || m.litres != prevLitres || m.alarms != prevAlarms || m.bestRssi > prevBest ||
-      m.lastMonthLitres != prevLastMonth)
+      m.billingLitres != prevBilling)
     surveyDirty = true;
 
   if (Serial.availableForWrite() >= 64) printMeterCsv(Serial, m);  // a stalled terminal mustn't block the loop

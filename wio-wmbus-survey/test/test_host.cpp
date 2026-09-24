@@ -119,10 +119,12 @@ static int c1Tests() {
 int main() {
   uint8_t chk[] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
   printf("crc check 0x%04X (expect 0xC2B7)\n", crc16(chk, 9));
-  struct { const char *hex; uint32_t id; uint32_t litres, lastMonth, lastMonthDate, battHalfYears, period; } v[] = {
+  struct { const char *hex; uint32_t id; uint32_t litres, billing, billingDate, battHalfYears, period; } v[] = {
       {"1944304C72242421D401A2013D4013DD8B46A4999C1293E582CC", 0x21242472, 3488, 3486, 20190930, 29, 8},
       {"2944A511780729662366A20118001378D3B3DB8CEDD77731F25832AAF3DA8CADF9774EA673172E8C61F2", 0x66236629, 16760, 11840, 20191130, 24, 8},
       {"1944A511780779194820A121170013355F8EDB2D03C6912B1E37", 0x20481979, 4366, 0, 20201231, 23, 8},
+      // same frame with the billing date's year zeroed: no billing date reached yet
+      {"1944A511780779194820A121170013355F8EDB2D03C6912B9E17", 0x20481979, 4366, 0, 0, 23, 8},
       {"1944304c9c5824210c04a363140013716577ec59e8663ab0d31c", 0x2124589c, 38944, 38691, 20210201, 20, 32},
   };
   int fails = 0;
@@ -142,9 +144,9 @@ int main() {
     printf("  alarms: %s\n", at);
     uint32_t lm = 0, lmDate = 0;
     decodeIzar(tg, l, &lm, &lmDate);
-    bool extraOk = lm == t.lastMonth && lmDate == t.lastMonthDate && izarBatteryHalfYears(tg) == t.battHalfYears &&
+    bool extraOk = lm == t.billing && lmDate == t.billingDate && izarBatteryHalfYears(tg) == t.battHalfYears &&
                    izarPeriodS(tg) == t.period;
-    printf("  last month: %u l on %u  battery: %.1f y  period: %u s %s\n", lm, lmDate,
+    printf("  billing: %u l on %u  battery: %.1f y  period: %u s %s\n", lm, lmDate,
            izarBatteryHalfYears(tg) / 2.0, izarPeriodS(tg), extraOk ? "PASS" : "FAIL");
     fails += !extraOk;
     fails += !ok;

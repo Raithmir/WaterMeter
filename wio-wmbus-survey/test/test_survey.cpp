@@ -246,8 +246,8 @@ static Meter izarMeter() {
   m.hasIzarInfo = true;
   m.battHalfYears = 19;
   m.periodS = 8;
-  m.lastMonthLitres = 120000;
-  m.lastMonthDate = 20260901;
+  m.billingLitres = 120000;
+  m.billingDate = 20260901;
   addSample(m, 515000000, -1000000, -65);
   return m;
 }
@@ -264,7 +264,7 @@ static void testCsv() {
 
   // Every kind of meter gives rows with the header's columns.
   Meter kinds[4] = {iz, iz, {}, {}};
-  kinds[1].lastMonthDate = 0;  // IZAR frame too short for the monthly reading
+  kinds[1].billingDate = 0;  // IZAR frame too short for the billing reading
   kinds[1].nSamples = 0;
   kinds[2].id = 0x12345678;
   memcpy(kinds[2].mfct, "KAM", 4);
