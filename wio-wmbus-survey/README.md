@@ -36,7 +36,7 @@ Frames decoded ok / failed (`err` always climbs a little: noise matching the syn
 Sensus iPERL readings are decoded with the public default key, or a per-meter key set with `k`. Their alarms come from the standard OMS status byte: `battLow` (power low) and `error` (permanent or temporary error). Meters that can't be decoded show manufacturer + type and get raw telegrams in `raw.csv`.
 
 ## Position
-Each meter keeps its 5 strongest GPS-tagged receptions. The position is a signal-weighted average of those, and `+-Xm` is how spread out they are (smaller = more trustworthy). Walk past on both sides for the best estimate.
+Each meter keeps its 5 strongest GPS-tagged receptions. Only receptions with a fresh fix count (at most 1.5 s old, HDOP 2.5 or better; `GPS_MAX_AGE_MS`/`GPS_MAX_HDOP` in main.cpp). The position is a signal-weighted average of those, and `+-Xm` is how spread out they are (smaller = more trustworthy). Walk past on both sides for the best estimate.
 
 ## Saving
 - Survey → QSPI flash: at most every 30 s, when something worth keeping changed (new meter, reading, alarms, better position). Snapshots are written in turn through a hidden `state.bin` (1 MB, or 512/256 KB if the flash has no free 1 MB run), so no part of the flash wears faster than the rest, and a power cut mid-save falls back to the previous snapshot.
@@ -57,7 +57,7 @@ While a computer has the drive the tracker keeps receiving and saving the survey
 
 ## Serial (115200, line-based)
     pio device monitor
-- `s` status: build date, QSPI flash, save ring, USB drive, battery, frame counters, GPS reception
+- `s` status: build date, QSPI flash, save ring, USB drive, battery, frame counters, GPS reception (sentences ok/bad, fix age, HDOP)
 - `d` dump table as CSV (label, mode T1/C1a/C1b, manufacturer, type, reading, alarms, UTC, lat, lon, spread)
 - `c` clear survey (labels and history kept)
 - `h` print history.csv, `r` print raw.csv (not while a computer has the drive: open the files there)

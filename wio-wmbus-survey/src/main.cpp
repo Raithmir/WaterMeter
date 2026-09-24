@@ -30,6 +30,8 @@ using Adafruit_LittleFS_Namespace::FILE_O_WRITE;
 #define LABEL_SAVE_MS 3000       // save labels this long after the last edit
 #define SCREEN_OFF_MS 120000     // screen off after this long without a button press (0 = never)
 #define LOW_BATT_V 3.50f         // warn below this (LiPo), cleared again above LOW_BATT_V + 0.1
+#define GPS_MAX_AGE_MS 1500      // position samples need a fix at most this old
+#define GPS_MAX_HDOP 2.5         // ... and at least this good (HDOP ~1 = good, >2.5 = metres worse)
 #define FS_MARKER "/wmsurvey"    // flash is formatted once if this is missing
 #define STATE_FILE "state.bin"      // QSPI, hidden: ring of survey snapshots (see "snapshot ring")
 #define STATE_BYTES (1024 * 1024UL)  // smaller sizes are tried if there's no free 1 MB run
@@ -291,9 +293,11 @@ void stepLabel(uint32_t id, int dir) {
 }
 
 // ---------- position estimate ----------
-// true if the sample was kept
+// true if the sample was kept. The L76K sends a fix every second, so a fresh one is at most ~1 s
+// old; older means the last update was lost, and walking on it would put the sample metres off.
 bool addSample(Meter &m, int16_t rssi) {
-  if (!gps.location.isValid() || gps.location.age() > 5000) return false;
+  if (!gps.location.isValid() || gps.location.age() > GPS_MAX_AGE_MS) return false;
+  if (gps.hdop.isValid() && gps.hdop.hdop() > GPS_MAX_HDOP) return false;  // poor satellite geometry
   return survey::addSample(m, (int32_t)lround(gps.location.lat() * 1e7), (int32_t)lround(gps.location.lng() * 1e7),
                            rssi);
 }
@@ -1134,6 +1138,7 @@ void runCommand(char *c) {
                   (unsigned long)gps.charsProcessed(), (unsigned long)gps.passedChecksum(),
                   (unsigned long)gps.failedChecksum(), (unsigned long)gps.satellites.value(),
                   gps.location.isValid() ? "yes" : "no", gpsTimeTrusted ? "trusted" : "not yet");
+    Serial.printf("gps fix age %lu ms, hdop %.1f\n", (unsigned long)gps.location.age(), gps.hdop.hdop());
     Serial.println("# end");
   } else if (!strcmp(c, "h")) {
     printLog(historyLog);
