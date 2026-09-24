@@ -62,7 +62,7 @@ While a computer has the drive the tracker keeps receiving and saving the survey
 - `c` clear survey (labels and history kept)
 - `h` print history.csv, `r` print raw.csv (not while a computer has the drive: open the files there)
 - `HCLEAR` delete history.csv and raw.csv
-- `l <id> <label>` set label, e.g. `l 217e06c8 12A`; `l <id>` removes it (a stored key is kept)
+- `l <id> <label>` set label, e.g. `l 1a2b3c4d 12A`; `l <id>` removes it (a stored key is kept)
 - `L` list labels (`,key` = meter has an AES key)
 - `k <id> <32 hex digits>` set a meter's AES key (e.g. a Sensus with a non-default key); `k <id>` clears it
 - `FORMAT` erase everything (internal + QSPI flash) and reboot

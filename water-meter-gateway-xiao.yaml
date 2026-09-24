@@ -72,7 +72,7 @@ wmbus_radio:
 
 wmbus_meter:
   - id: water_meter
-    meter_id: 0x217e06c8
+    meter_id: YOUR_METER_ID
     type: izar
     mode:
       - T1
