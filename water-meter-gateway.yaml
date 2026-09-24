@@ -14,6 +14,8 @@ external_components:
 logger:
   level: INFO
   baud_rate: 115200
+  logs:
+    wmbus: ERROR  # hide "not handled by any handler" for every neighbouring meter
 
 wifi:
   ssid: "YOUR_WIFI_SSID"
