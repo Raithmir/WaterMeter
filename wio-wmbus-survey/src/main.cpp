@@ -194,6 +194,25 @@ float batteryVolts() { return analogRead(PIN_VBAT) * AREF_VOLTAGE / 4095.0f * AD
 
 void beep(uint16_t freq, uint16_t ms) { tone(PIN_BUZZER, freq, ms); }
 
+// Beep sequences play from loop(), so the radio keeps being serviced while they sound
+// (tone() itself doesn't block).
+struct BeepSeq {
+  uint8_t left;
+  uint16_t freq, ms, gapMs;
+  uint32_t next;
+} beepSeq = {};
+
+void beepRepeat(uint8_t n, uint16_t freq, uint16_t ms, uint16_t gapMs) {
+  beepSeq = {n, freq, ms, gapMs, millis()};
+}
+
+void handleBeeps() {
+  if (!beepSeq.left || (int32_t)(millis() - beepSeq.next) < 0) return;
+  beep(beepSeq.freq, beepSeq.ms);
+  beepSeq.left--;
+  beepSeq.next = millis() + beepSeq.ms + beepSeq.gapMs;
+}
+
 // Diehl PRIOS frames don't carry a standard type byte, so decoded IZAR meters are "water".
 void typeNames(const Meter &m, const char *&shortName, const char *&longName) {
   if (m.hasLitres) {
@@ -1131,9 +1150,7 @@ void handlePacket() {
     surveyDirty = true;
 
   if (Serial.availableForWrite() >= 64) printMeterCsv(Serial, m);  // a stalled terminal mustn't block the loop
-  if (newLeak) {
-    for (int i = 0; i < 3; i++) { beep(3200, 120); delay(180); }
-  }
+  if (newLeak) beepRepeat(3, 3200, 120, 60);
   sortMeters();
 }
 
@@ -1495,6 +1512,7 @@ void loop() {
 
   handleButtons();
   handleSerial();
+  handleBeeps();
 
   uint32_t now = millis();
   if (labelsDirty && now - lastLabelEdit > LABEL_SAVE_MS) saveLabels();
