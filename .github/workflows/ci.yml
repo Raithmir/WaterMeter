@@ -1,0 +1,73 @@
+# Host tests, survey firmware build and ESPHome config check on every push.
+# A tag v* also publishes the survey firmware.uf2 as a GitHub release.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: wio-wmbus-survey
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decoder test
+        run: g++ -std=c++17 -Wall -Isrc test/test_host.cpp -o t && ./t
+      - name: Storage and CSV test
+        run: g++ -std=c++17 -Wall -Isrc test/test_survey.cpp -o ts && ./ts
+
+  firmware:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: wio-wmbus-survey
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('wio-wmbus-survey/platformio.ini') }}
+      - run: pip install platformio
+      - run: pio run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wio-wmbus-survey-firmware
+          path: wio-wmbus-survey/.pio/build/wio_tracker_l1/firmware.uf2
+
+  esphome:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install esphome==2026.6.5
+      - name: Validate configs
+        # The committed configs hold placeholders; give them values that pass validation.
+        run: |
+          mkdir ci
+          for f in *.yaml; do
+            sed -e 's/YOUR_METER_ID/0x12345678/' -e 's/YOUR_WIFI_PASSWORD/ci-password/' "$f" > "ci/$f"
+            esphome config "ci/$f" > /dev/null
+          done
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [host-tests, firmware, esphome]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wio-wmbus-survey-firmware
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: firmware.uf2
+          generate_release_notes: true
