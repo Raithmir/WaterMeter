@@ -15,15 +15,22 @@ Back to Meshtastic any time via https://flasher.meshtastic.org
 - Joystick up/down: select meter
 - Joystick press: list / detail view
 - Joystick left/right (detail view): set house number. Hold to repeat. An unlabelled meter starts next to the last number you used. Stepping to 0 removes the label.
+- Joystick left/right (list view): diagnostics screen (any of left/right/press goes back)
 - User button: sort by best RSSI / last seen
-- Beeps: three long = meter newly reporting a leak
+- Screen turns off after 2 minutes without a button press; the next press only wakes it. A new leak or low battery wakes it too. (`SCREEN_OFF_MS` in main.cpp, 0 = never)
+- Beeps: three short = meter newly reporting a leak; two low = battery below 3.5 V
 
 ## List view
+Top line: `N48  S9  3.92V` = meters in the table, GPS satellites in view, battery (`LOW` below 3.5 V).
+
 `#12     L   12.345  -71*`
 - Label (or meter ID if unlabelled)
 - Flag: `L` leaking now, `l` leaked previously, `!` other alarm
 - Reading in m³, or manufacturer + device type (e.g. `KAM cold`) for meters whose reading isn't decoded
 - Best RSSI; `*` = not heard since power-on (values from the saved survey)
+
+## Diagnostics screen
+Frames decoded ok / failed (`err` always climbs a little: noise matching the sync word), GPS satellites and fix, battery, whether a computer has the USB drive, QSPI flash and save ring, snapshot count and labels, log bytes waiting to be appended, uptime. The serial `s` command shows the same and more.
 
 ## Other meters
 Sensus iPERL readings are decoded with the public default key, or a per-meter key set with `k`. Their alarms come from the standard OMS status byte: `battLow` (power low) and `error` (permanent or temporary error). Meters that can't be decoded show manufacturer + type and get raw telegrams in `raw.csv`.
@@ -50,7 +57,7 @@ While a computer has the drive the tracker keeps receiving and saving the survey
 
 ## Serial (115200, line-based)
     pio device monitor
-- `s` status: build date, QSPI flash, save ring, USB drive, GPS reception
+- `s` status: build date, QSPI flash, save ring, USB drive, battery, frame counters, GPS reception
 - `d` dump table as CSV (label, mode T1/C1a/C1b, manufacturer, type, reading, alarms, UTC, lat, lon, spread)
 - `c` clear survey (labels and history kept)
 - `h` print history.csv, `r` print raw.csv (not while a computer has the drive: open the files there)
@@ -65,10 +72,10 @@ While a computer has the drive the tracker keeps receiving and saving the survey
 
 ## If it doesn't work
 - Screen blank → check serial; the OLED address is auto-detected (0x3C/0x3D). Garbled → set `DISPLAY_SH1106 0` in main.cpp
-- `er` always climbs a little (random noise matching the sync word). If `ok` stays 0 while your meter is transmitting, compare with the Heltec
+- On the diagnostics screen `err` always climbs a little (random noise matching the sync word). If `ok` stays 0 while your meter is transmitting, compare with the Heltec
 - `# survey saved ... FAILED` on serial → send `c` or `FORMAT`
 - "QSPI error: small survey" on screen → the QSPI flash didn't start; the survey falls back to internal flash, which only has room for roughly 100 meters
 - No `WMBUS` drive → check it's a data cable; the drive only appears a few seconds after boot. The boot screen shows the build date and `flash ok` / `FLASH FAIL`; `s` on serial gives the details. With a flash failure Windows shows a removable disk with no media
 - Nothing at all → check `radio init failed` on serial
-- "no position yet" in detail view → that meter hasn't been heard since the GPS got a fix (the `S` number on the list view is satellites in view; first fix outdoors can take up to 15 min)
+- "no position yet" in detail view → that meter hasn't been heard since the GPS got a fix (the `S` number on the list view is satellites in view, and the diagnostics screen says whether there's a fix; first fix outdoors can take up to 15 min)
 - "flash error: no saving" → send `FORMAT`

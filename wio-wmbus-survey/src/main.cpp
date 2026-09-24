@@ -27,6 +27,8 @@ using Adafruit_LittleFS_Namespace::FILE_O_WRITE;
 #define SURVEY_SAVE_MS 30000     // save survey at most this often (only when something worth keeping changed)
 #define FALLBACK_SAVE_MS 600000  // without the snapshot ring (internal flash: ~10k erase cycles)
 #define LABEL_SAVE_MS 3000       // save labels this long after the last edit
+#define SCREEN_OFF_MS 120000     // screen off after this long without a button press (0 = never)
+#define LOW_BATT_V 3.50f         // warn below this (LiPo), cleared again above LOW_BATT_V + 0.1
 #define FS_MARKER "/wmsurvey"    // flash is formatted once if this is missing
 #define STATE_FILE "state.bin"      // QSPI, hidden: ring of survey snapshots (see "snapshot ring")
 #define STATE_BYTES (1024 * 1024UL)  // smaller sizes are tried if there's no free 1 MB run
@@ -174,6 +176,11 @@ int lastLabelNum = 0;  // starting point for labelling the next house
 int sel = 0, top = 0;
 uint32_t selId = 0;  // selection follows the meter, not the row, when the list re-sorts
 bool detail = false;
+bool diag = false;      // diagnostics screen (joystick left/right from the list)
+bool screenOn = true;
+uint32_t lastInput = 0;  // last button press, for the screen timeout
+float battV = 0;         // smoothed battery voltage
+bool battLow = false;
 bool sortByRssi = true;
 uint32_t okCount = 0, errCount = 0;
 bool surveyDirty = false, labelsDirty = false;
@@ -204,6 +211,30 @@ struct BeepSeq {
 
 void beepRepeat(uint8_t n, uint16_t freq, uint16_t ms, uint16_t gapMs) {
   beepSeq = {n, freq, ms, gapMs, millis()};
+}
+
+void setScreen(bool on) {
+  screenOn = on;
+  oled.setPowerSave(!on);
+}
+
+// Something needs attention (leak, low battery): screen on and restart the timeout.
+void wakeScreen() {
+  lastInput = millis();
+  if (!screenOn) setScreen(true);
+}
+
+// Called every 500 ms. Averaged, because the reading dips while the radio or GPS draw current.
+void updateBattery() {
+  float v = batteryVolts();
+  battV = battV ? battV * 0.8f + v * 0.2f : v;
+  if (!battLow && battV < LOW_BATT_V) {
+    battLow = true;
+    beepRepeat(2, 800, 300, 200);
+    wakeScreen();
+  } else if (battLow && battV > LOW_BATT_V + 0.1f) {
+    battLow = false;  // charging
+  }
 }
 
 void handleBeeps() {
@@ -1150,18 +1181,19 @@ void handlePacket() {
     surveyDirty = true;
 
   if (Serial.availableForWrite() >= 64) printMeterCsv(Serial, m);  // a stalled terminal mustn't block the loop
-  if (newLeak) beepRepeat(3, 3200, 120, 60);
+  if (newLeak) {
+    beepRepeat(3, 3200, 120, 60);
+    wakeScreen();
+  }
   sortMeters();
 }
 
 // ---------- UI ----------
 void drawList() {
   char line[32];
-  char ok[8];
-  if (okCount < 10000) snprintf(ok, sizeof(ok), "%lu", (unsigned long)okCount);
-  else snprintf(ok, sizeof(ok), "%luk", (unsigned long)(okCount > 999999 ? 999 : okCount / 1000));
-  snprintf(line, sizeof(line), "N%d ok%s er%lu S%lu %.1fV", meterCount, ok,
-           (unsigned long)(errCount > 999 ? 999 : errCount), (unsigned long)gps.satellites.value(), batteryVolts());
+  // frame counters are on the diagnostics screen
+  snprintf(line, sizeof(line), "N%d  S%lu  %.2fV%s", meterCount, (unsigned long)gps.satellites.value(), battV,
+           battLow ? " LOW" : "");
   oled.drawStr(0, 7, line);
   oled.drawHLine(0, 9, 128);
 
@@ -1263,9 +1295,34 @@ void drawDetail() {
   oled.drawStr(0, 62, line);
 }
 
+// Everything the serial 's' command covers, for checking without a computer. Lines fit 25 chars.
+void drawDiag() {
+  char line[32];
+  oled.drawStr(0, 7, "Diag  built " __DATE__);
+  oled.drawHLine(0, 9, 128);
+  snprintf(line, sizeof(line), "ok %lu  err %lu", (unsigned long)okCount, (unsigned long)errCount);
+  oled.drawStr(0, 18, line);
+  snprintf(line, sizeof(line), "GPS %lu sats, %s", (unsigned long)gps.satellites.value(),
+           gps.location.isValid() ? (gpsTimeTrusted ? "fix" : "fix, no time") : "no fix");
+  oled.drawStr(0, 27, line);
+  snprintf(line, sizeof(line), "batt %.2fV%s%s", battV, battLow ? " LOW" : "", driveToHost ? " PC drive" : "");
+  oled.drawStr(0, 36, line);
+  if (qspiOk) snprintf(line, sizeof(line), "flash %luK ring %s", (unsigned long)(flash.size() / 1024), ringOk ? "ok" : "off");
+  else snprintf(line, sizeof(line), "FLASH FAIL id %06lx", (unsigned long)chipJedecId());
+  oled.drawStr(0, 45, line);
+  snprintf(line, sizeof(line), "snap %lu  %d labels%s", (unsigned long)snapSeq, labelCount, fsOk ? "" : " NOSAVE");
+  oled.drawStr(0, 54, line);
+  uint32_t up = millis() / 60000;
+  snprintf(line, sizeof(line), "log %u+%uB up %luh%02lum", (unsigned)historyLog.len, (unsigned)rawLog.len,
+           (unsigned long)(up / 60), (unsigned long)(up % 60));
+  oled.drawStr(0, 63, line);
+}
+
 void drawScreen() {
+  if (!screenOn) return;
   oled.clearBuffer();
-  if (detail && meterCount > 0) drawDetail();
+  if (diag) drawDiag();
+  else if (detail && meterCount > 0) drawDetail();
   else drawList();
   oled.sendBuffer();
 }
@@ -1301,26 +1358,37 @@ bool pressed(Btn &b) {
   return false;
 }
 
+// The initial press, not a repeat from holding the button.
+bool firstFire(const Btn &b) { return b.lastFire == b.changed; }
+
 void handleButtons() {
-  bool redraw = false;
-  if (pressed(bUp) && sel > 0) { selId = meters[order[--sel]].id; redraw = true; }
-  if (pressed(bDown) && sel < meterCount - 1) { selId = meters[order[++sel]].id; redraw = true; }
-  bool l = pressed(bLeft), r = pressed(bRight);
-  if (detail && meterCount > 0 && (l || r)) {
-    uint32_t id = meters[order[sel]].id;
-    stepLabel(id, r ? 1 : -1);
-    redraw = true;
+  bool up = pressed(bUp), down = pressed(bDown), l = pressed(bLeft), r = pressed(bRight), press = pressed(bPress),
+       user = pressed(bUser);
+  if (!(up || down || l || r || press || user)) return;
+  lastInput = millis();
+  if (!screenOn) {  // the press that wakes the screen does nothing else
+    setScreen(true);
+    drawScreen();
+    return;
   }
-  if (pressed(bPress)) {
-    detail = !detail;
-    redraw = true;
+  bool lrOnce = (l && firstFire(bLeft)) || (r && firstFire(bRight));  // holding mustn't flip screens
+  if (diag) {
+    if (lrOnce || press) diag = false;
+  } else {
+    if (up && sel > 0) selId = meters[order[--sel]].id;
+    if (down && sel < meterCount - 1) selId = meters[order[++sel]].id;
+    if (detail && meterCount > 0) {
+      if (l || r) stepLabel(meters[order[sel]].id, r ? 1 : -1);
+    } else if (lrOnce) {
+      diag = true;
+    }
+    if (press) detail = !detail;
   }
-  if (pressed(bUser)) {
+  if (user) {
     sortByRssi = !sortByRssi;
     sortMeters();
-    redraw = true;
   }
-  if (redraw) drawScreen();
+  drawScreen();
 }
 
 // ---------- serial commands ----------
@@ -1368,6 +1436,8 @@ void runCommand(char *c) {
     Serial.printf("internal flash %s, meters %d, labels %d, log rows waiting %u+%u bytes\n", fsOk ? "ok" : "FAILED",
                   meterCount, labelCount, (unsigned)historyLog.len, (unsigned)rawLog.len);
     Serial.printf("usb mounted %d, drive %s\n", TinyUSBDevice.mounted(), driveToHost ? "with computer" : "held");
+    Serial.printf("battery %.2f V%s, frames ok %lu err %lu\n", battV, battLow ? " LOW" : "", (unsigned long)okCount,
+                  (unsigned long)errCount);
     Serial.printf("gps chars %lu, sentences ok %lu bad %lu, sats %lu, fix %s, time %s\n",
                   (unsigned long)gps.charsProcessed(), (unsigned long)gps.passedChecksum(),
                   (unsigned long)gps.failedChecksum(), (unsigned long)gps.satellites.value(),
@@ -1470,6 +1540,7 @@ void setup() {
 
   for (auto *b : allBtns) pinMode(b->pin, INPUT_PULLUP);
   analogReadResolution(12);
+  battV = batteryVolts();
 
   // OLED address: Zephyr's board file says 0x3D, U8g2 defaults to 0x3C - probe both.
   Wire.begin();
@@ -1498,6 +1569,7 @@ void setup() {
   delay(2000);
   radioInit();
   beep(2000, 60);
+  lastInput = millis();
   Serial.println("# wM-Bus T1 survey ready. Send 'help' for commands");
   printCsvHeader(Serial);
 }
@@ -1525,10 +1597,12 @@ void loop() {
   if (surveyDirty && (ringOk || !driveToHost) && now - lastSurveySave > (ringOk ? SURVEY_SAVE_MS : FALLBACK_SAVE_MS))
     saveSurvey();
 
+  if (screenOn && SCREEN_OFF_MS && now - lastInput > SCREEN_OFF_MS) setScreen(false);
   static uint32_t lastDraw = 0;
   if (now - lastDraw > 500) {
     lastDraw = now;
     digitalWrite(PIN_LED1, LOW);
+    updateBattery();
     drawScreen();
   }
   delay(1);
