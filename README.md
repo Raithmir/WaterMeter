@@ -93,7 +93,7 @@ After the first flash, updates can be sent over OTA.
 
 - **Sensors:** water total (m³, `total_increasing`), last month total, battery life (years), meter RSSI, transmit period, gateway uptime, WiFi signal.
 - **Text sensors:** current alarms, previous alarms, last month reading date, ESPHome version.
-- **Binary sensors:** water leak, meter fault (any alarm), and stale (no telegram for 6 hours).
+- **Binary sensors:** water leak, meter fault (any alarm), and stale (no telegram for 6 hours, counted from boot if none has arrived yet).
 
 For daily or monthly consumption, point a Utility Meter helper at Water Total.
 

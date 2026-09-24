@@ -196,11 +196,9 @@ interval:
   - interval: 60s
     then:
       - lambda: |-
-          if (id(last_telegram_ms) == 0) {
-            id(water_stale).publish_state(false);
-          } else {
-            id(water_stale).publish_state((millis() - id(last_telegram_ms)) > 21600000);  // 6 hours
-          }
+          // Never heard since boot counts from boot (last_telegram_ms starts at 0), so a
+          // gateway that can't hear the meter after a restart still goes stale.
+          id(water_stale).publish_state((millis() - id(last_telegram_ms)) > 21600000);  // 6 hours
 
 switch:
   - platform: gpio
