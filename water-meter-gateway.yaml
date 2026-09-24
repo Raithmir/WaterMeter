@@ -170,6 +170,7 @@ binary_sensor:
     internal: true
     pin:
       number: GPIO0
+      ignore_strapping_warning: true  # the board's own PRG button
       mode:
         input: true
         pullup: true
