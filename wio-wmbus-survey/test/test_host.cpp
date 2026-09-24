@@ -1,4 +1,4 @@
-// Host-side test: g++ -std=c++17 -I../src test_host.cpp -o t && ./t
+// Host-side test: g++ -std=c++17 -Isrc test/test_host.cpp -o t && ./t   (from wio-wmbus-survey/)
 // Vectors from wmbusmeters simulations/simulation_izars.txt
 #include <cstdio>
 #include <cstdlib>

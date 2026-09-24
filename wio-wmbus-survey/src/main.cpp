@@ -11,6 +11,8 @@
 #include <Adafruit_TinyUSB.h>
 #include <cmath>
 #include "wmbus.h"
+#include "survey.h"
+#include "snapring.h"
 #include "fat12.h"
 
 // SdFat also defines a global File, so name the LittleFS one explicitly
@@ -21,7 +23,6 @@ using Adafruit_LittleFS_Namespace::FILE_O_WRITE;
 // ---------- config ----------
 #define MAX_METERS 512          // survey lives on the 2 MB QSPI flash
 #define MAX_LABELS 128          // labels stay in the 28 KB internal flash
-#define MAX_SAMPLES 5            // strongest GPS-tagged receptions kept per meter
 #define ROWS 6
 #define DISPLAY_SH1106 1         // L1 uses an SH1106 (per Zephyr board file); 0 = SSD1306
 #define SURVEY_SAVE_MS 30000     // save survey at most this often (only when something worth keeping changed)
@@ -39,11 +40,10 @@ using Adafruit_LittleFS_Namespace::FILE_O_WRITE;
 #define LABEL_FILE "/labels.bin"
 #define FILE_VERSION_LABELS 2
 #define SURVEY_VERSION 3         // 3 added IZAR last-month/battery/period and log state.
-                                 // Changing Meter means a new version AND a conversion in loadSnapshot(),
-                                 // or the saved survey is dropped on upgrade.
+                                 // Changing Meter (survey.h) means a new version AND a conversion in
+                                 // loadSnapshot(), or the saved survey is dropped on upgrade.
 #define HISTORY_FILE "/history.csv"  // one row per meter per walk
 #define RAW_FILE "/raw.csv"          // raw telegrams of meters whose reading isn't decoded
-#define LOG_INTERVAL_S (6 * 3600UL)  // a meter heard again within this counts as the same walk
 
 // ---------- hardware ----------
 SX1262 radio = new Module(SX126X_CS, SX126X_DIO1, SX126X_RESET, SX126X_BUSY);
@@ -100,40 +100,7 @@ FatVolume fatfs;
 Adafruit_USBD_MSC usbDrive;
 
 // ---------- state ----------
-struct Sample {
-  int32_t lat, lon;  // degrees * 1e7
-  int16_t rssi;
-};
-
-struct Meter {
-  uint32_t id;
-  char mfct[4];
-  uint8_t ver, type;
-  uint8_t mode;  // wmbus::Mode
-  uint16_t alarms;
-  uint32_t litres;
-  bool hasLitres;
-  int16_t lastRssi, bestRssi;
-  uint16_t count;
-  uint32_t utc;  // last heard, seconds since 1970 from GPS (0 = unknown)
-  uint8_t nSamples;
-  Sample samples[MAX_SAMPLES];
-  // IZAR extras (hasIzarInfo)
-  bool hasIzarInfo;
-  uint8_t battHalfYears;     // remaining battery life, half years
-  uint32_t periodS;          // transmit interval
-  uint32_t lastMonthLitres;  // reading at the start of the month (0 = unknown)
-  uint32_t lastMonthDate;    // YYYYMMDD of that reading (0 = unknown)
-  // log state, saved so a reboot mid-walk doesn't log meters twice
-  uint32_t loggedUtc;        // last history.csv row
-  uint16_t loggedAlarms;     // alarms in that row
-  uint32_t rawLoggedUtc;     // last raw.csv row
-  // runtime only (reset on load)
-  uint32_t lastSeen;
-  bool thisSession;
-  bool heardSinceLog;
-  bool rawThisSession;
-};
+using namespace survey;
 
 // Survey format 2 (previous builds), converted on load.
 struct MeterV2 {
@@ -244,17 +211,6 @@ void handleBeeps() {
   beepSeq.next = millis() + beepSeq.ms + beepSeq.gapMs;
 }
 
-// Diehl PRIOS frames don't carry a standard type byte, so decoded IZAR meters are "water".
-void typeNames(const Meter &m, const char *&shortName, const char *&longName) {
-  if (m.hasLitres) {
-    shortName = longName = "water";
-    return;
-  }
-  wmbus::deviceType(m.type, shortName, longName);
-}
-
-const char *modeName(const Meter &m) { return wmbus::modeStr((wmbus::Mode)m.mode); }
-
 // Before its first fix the GPS reports its own clock, which can be anything (TinyGPSPlus
 // accepts it), so time is only trusted once a position fix has been seen.
 bool gpsTimeTrusted = false;
@@ -265,43 +221,8 @@ uint32_t gpsEpoch() {
     gpsTimeTrusted = true;
   }
   if (!gps.date.isValid() || !gps.time.isValid() || gps.date.year() < 2024 || gps.date.year() > 2079) return 0;
-  // days from civil (Howard Hinnant)
-  int y = gps.date.year(), m = gps.date.month(), d = gps.date.day();
-  y -= m <= 2;
-  int era = y / 400;
-  unsigned yoe = y - era * 400;
-  unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-  unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  long days = era * 146097L + doe - 719468L;
-  return days * 86400UL + gps.time.hour() * 3600UL + gps.time.minute() * 60UL + gps.time.second();
-}
-
-void civilDate(uint32_t t, unsigned &y, unsigned &m, unsigned &d) {
-  long days = t / 86400 + 719468;  // civil from days (Howard Hinnant)
-  long era = days / 146097;
-  unsigned doe = days - era * 146097;
-  unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-  unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-  unsigned mp = (5 * doy + 2) / 153;
-  d = doy - (153 * mp + 2) / 5 + 1;
-  m = mp < 10 ? mp + 3 : mp - 9;
-  y = yoe + era * 400 + (m <= 2);
-}
-
-void formatUtc(uint32_t t, char *out, size_t n) {
-  unsigned y, m, d;
-  civilDate(t, y, m, d);
-  uint32_t secs = t % 86400;
-  snprintf(out, n, "%02lu:%02lu %02u/%02u UTC", (unsigned long)(secs / 3600), (unsigned long)(secs / 60 % 60), d, m);
-}
-
-// 2026-09-23T14:05:12Z
-void isoUtc(uint32_t t, char *out, size_t n) {
-  unsigned y, m, d;
-  civilDate(t, y, m, d);
-  uint32_t secs = t % 86400;
-  snprintf(out, n, "%04u-%02u-%02uT%02lu:%02lu:%02luZ", y, m, d, (unsigned long)(secs / 3600),
-           (unsigned long)(secs / 60 % 60), (unsigned long)(secs % 60));
+  return epochFromCivil(gps.date.year(), gps.date.month(), gps.date.day(), gps.time.hour(), gps.time.minute(),
+                        gps.time.second());
 }
 
 // ---------- labels ----------
@@ -373,46 +294,8 @@ void stepLabel(uint32_t id, int dir) {
 // true if the sample was kept
 bool addSample(Meter &m, int16_t rssi) {
   if (!gps.location.isValid() || gps.location.age() > 5000) return false;
-  Sample s = {(int32_t)lround(gps.location.lat() * 1e7), (int32_t)lround(gps.location.lng() * 1e7), rssi};
-  if (m.nSamples < MAX_SAMPLES) {
-    m.samples[m.nSamples++] = s;
-    return true;
-  }
-  int weakest = 0;
-  for (int i = 1; i < MAX_SAMPLES; i++)
-    if (m.samples[i].rssi < m.samples[weakest].rssi) weakest = i;
-  if (rssi <= m.samples[weakest].rssi) return false;
-  m.samples[weakest] = s;
-  return true;
-}
-
-// Weighted centroid of the strongest receptions (weight = linear power relative to best).
-// spread = weighted RMS distance of samples from the centroid, in metres.
-bool estimatePosition(const Meter &m, double &lat, double &lon, float &spread) {
-  if (!m.nSamples) return false;
-  int16_t best = -32768;
-  for (int i = 0; i < m.nSamples; i++) if (m.samples[i].rssi > best) best = m.samples[i].rssi;
-  const Sample &ref = m.samples[0];
-  double sw = 0, dy = 0, dx = 0;
-  double w[MAX_SAMPLES];
-  for (int i = 0; i < m.nSamples; i++) {
-    w[i] = pow(10.0, (m.samples[i].rssi - best) / 10.0);
-    sw += w[i];
-    dy += w[i] * (m.samples[i].lat - ref.lat);
-    dx += w[i] * (m.samples[i].lon - ref.lon);
-  }
-  lat = (ref.lat + dy / sw) / 1e7;
-  lon = (ref.lon + dx / sw) / 1e7;
-  const double mPerE7 = 0.011132;  // metres per 1e-7 degree of latitude
-  const double cosLat = cos(lat * M_PI / 180.0);
-  double var = 0;
-  for (int i = 0; i < m.nSamples; i++) {
-    double ny = (m.samples[i].lat / 1e7 - lat) * 1e7 * mPerE7;
-    double nx = (m.samples[i].lon / 1e7 - lon) * 1e7 * mPerE7 * cosLat;
-    var += w[i] * (nx * nx + ny * ny);
-  }
-  spread = sqrt(var / sw);
-  return true;
+  return survey::addSample(m, (int32_t)lround(gps.location.lat() * 1e7), (int32_t)lround(gps.location.lng() * 1e7),
+                           rssi);
 }
 
 // ---------- persistence ----------
@@ -512,8 +395,8 @@ struct LogFile {
   char buf[4096];
   size_t len;
 };
-LogFile historyLog = {HISTORY_FILE, "utc,id,label,mfct,type,litres,last_month_litres,last_month_date,alarms,battery_years,rssi\n"};
-LogFile rawLog = {RAW_FILE, "utc,id,label,mode,mfct,type,rssi,telegram\n"};
+LogFile historyLog = {HISTORY_FILE, HISTORY_HEADER};
+LogFile rawLog = {RAW_FILE, RAW_HEADER};
 
 bool flushLog(LogFile &lf) {
   if (!lf.len) return true;
@@ -521,7 +404,7 @@ bool flushLog(LogFile &lf) {
   bool isNew = !fatfs.exists(lf.path);
   File32 f = fatfs.open(lf.path, O_WRONLY | O_CREAT | O_APPEND);
   if (!f) return false;
-  bool ok = !isNew || f.write(lf.header, strlen(lf.header)) == strlen(lf.header);
+  bool ok = !isNew || (f.write(lf.header, strlen(lf.header)) == strlen(lf.header) && f.write('\n') == 1);
   ok = ok && f.write(lf.buf, lf.len) == lf.len;
   ok = f.close() && ok;
   if (ok) lf.len = 0;
@@ -548,42 +431,16 @@ void printLog(LogFile &lf) {
     while ((n = f.read(chunk, sizeof(chunk))) > 0) Serial.write(chunk, n);
     f.close();
   } else {
-    Serial.print(lf.header);
+    Serial.println(lf.header);
   }
   Serial.write((const uint8_t *)lf.buf, lf.len);
 }
 
 // ---------- snapshot ring ----------
-// The survey is saved as snapshots written one after another through a pre-allocated,
-// contiguous state.bin, wrapping at the end. The FAT tables and directory are never touched by
-// a save, and every part of the ring wears evenly (rewriting a FAT file every 30 s would wear
-// out the directory's flash block in days of continuous use). A snapshot is only trusted if its
-// CRC checks out, so a power cut mid-save falls back to the previous one.
-// Ring block 0 holds a random ring ID; snapshots carry it, so stale data left in the flash from
-// before a FORMAT is never mistaken for a snapshot.
-const uint32_t MAGIC_RING = 0x474E4952;  // "RING"
-const uint32_t MAGIC_SNAP = 0x50414E53;  // "SNAP"
-struct RingHeader {
-  uint32_t magic, ringId;
-};
-struct SnapHeader {
-  uint32_t magic, ringId, seq;
-  uint16_t version, count;      // count = meters
-  uint16_t historyLen, rawLen;  // log rows not yet appended to the CSV files
-  uint32_t crc;                 // CRC-32 of everything after the header
-};
+// The survey (meters + log rows waiting for the CSV files) is saved through a ring of snapshots
+// in the hidden state.bin; see snapring.h.
 bool ringOk = false;
-uint32_t ringBase = 0, ringBlocks = 0;  // first sector (4 KB aligned) and size in 4 KB blocks
-uint32_t ringId = 0, snapSeq = 0, snapNext = 1;  // next snapshot: sequence number, block
-
-uint32_t crc32(uint32_t crc, const uint8_t *p, size_t n) {
-  crc = ~crc;
-  while (n--) {
-    crc ^= *p++;
-    for (int k = 0; k < 8; k++) crc = (crc >> 1) ^ (0xEDB88320UL & (0 - (crc & 1)));
-  }
-  return ~crc;
-}
+snapring::Ring<LockedFlash> ring(flash);
 
 uint32_t hwRandom() {
   uint32_t v = 0;
@@ -596,17 +453,6 @@ uint32_t hwRandom() {
   }
   NRF_RNG->TASKS_STOP = 1;
   return v;
-}
-
-bool writeRingHeader() {
-  uint8_t sec[512];
-  memset(sec, 0xFF, sizeof(sec));
-  ringId = hwRandom();
-  RingHeader rh = {MAGIC_RING, ringId};
-  memcpy(sec, &rh, sizeof(rh));
-  snapSeq = 0;
-  snapNext = 1;
-  return flash.writeSectors(ringBase, sec, 1) && flash.syncBlocks();
 }
 
 bool ringInit() {
@@ -638,122 +484,31 @@ bool ringInit() {
     if (!ok) return false;
   }
   flash.syncBlocks();
-  ringBase = (first + 7) & ~7UL;
-  ringBlocks = (last + 1 - ringBase) / 8;
-  if (ringBlocks < RING_MIN_BLOCKS) return false;
-  RingHeader rh;
-  uint8_t sec[512];
-  if (!flash.readSectors(ringBase, sec, 1)) return false;
-  memcpy(&rh, sec, sizeof(rh));
-  if (created || rh.magic != MAGIC_RING) return writeRingHeader();
-  ringId = rh.ringId;
-  return true;
+  uint32_t base = (first + 7) & ~7UL;
+  uint32_t blocks = (last + 1 - base) / 8;
+  if (blocks < RING_MIN_BLOCKS) return false;
+  return ring.begin(base, blocks, created, hwRandom());
 }
 
-// Reads `n` bytes of snapshot payload, starting `offset` bytes into the snapshot.
-bool readSnapBytes(uint32_t block, size_t offset, uint8_t *dst, size_t n, uint32_t &crc) {
-  uint8_t sec[512];
-  while (n) {
-    uint32_t s = ringBase + block * 8 + offset / 512;
-    size_t o = offset % 512, k = min(n, sizeof(sec) - o);
-    if (!flash.readSectors(s, sec, 1)) return false;
-    memcpy(dst, sec + o, k);
-    crc = crc32(crc, sec + o, k);
-    dst += k;
-    offset += k;
-    n -= k;
-  }
-  return true;
+// Survey + waiting log rows, as the ring stores them.
+snapring::Contents snapContents() {
+  return {meters, sizeof(Meter), (uint16_t)meterCount, MAX_METERS,
+          (uint8_t *)historyLog.buf, (uint16_t)historyLog.len, sizeof(historyLog.buf),
+          (uint8_t *)rawLog.buf, (uint16_t)rawLog.len, sizeof(rawLog.buf)};
 }
 
 // Newest valid snapshot into meters[] and the log buffers. -1 if there is none.
 int loadSnapshot() {
-  static uint16_t cand[256];  // blocks with a plausible header, newest first
-  static uint32_t candSeq[256];
-  int nc = 0;
-  uint8_t sec[512];
-  for (uint32_t b = 1; b < ringBlocks && nc < 256; b++) {
-    if (!flash.readSectors(ringBase + b * 8, sec, 1)) continue;
-    SnapHeader h;
-    memcpy(&h, sec, sizeof(h));
-    if (h.magic != MAGIC_SNAP || h.ringId != ringId || h.version != SURVEY_VERSION || h.count > MAX_METERS ||
-        h.historyLen > sizeof(historyLog.buf) || h.rawLen > sizeof(rawLog.buf))
-      continue;
-    if (h.seq > snapSeq) snapSeq = h.seq;
-    int i = nc++;
-    while (i > 0 && candSeq[i - 1] < h.seq) {
-      cand[i] = cand[i - 1];
-      candSeq[i] = candSeq[i - 1];
-      i--;
-    }
-    cand[i] = b;
-    candSeq[i] = h.seq;
-  }
-  for (int i = 0; i < nc; i++) {
-    uint32_t b = cand[i];
-    SnapHeader h;
-    uint32_t crc = 0, ignore = 0;
-    size_t off = sizeof(h);
-    if (!readSnapBytes(b, 0, (uint8_t *)&h, sizeof(h), ignore)) continue;
-    size_t mb = h.count * sizeof(Meter);
-    if (!readSnapBytes(b, off, (uint8_t *)meters, mb, crc) ||
-        !readSnapBytes(b, off + mb, (uint8_t *)historyLog.buf, h.historyLen, crc) ||
-        !readSnapBytes(b, off + mb + h.historyLen, (uint8_t *)rawLog.buf, h.rawLen, crc) || crc != h.crc) {
-      Serial.printf("# snapshot %lu damaged, trying an older one\n", (unsigned long)h.seq);
-      continue;
-    }
-    historyLog.len = h.historyLen;
-    rawLog.len = h.rawLen;
-    size_t total = sizeof(h) + mb + h.historyLen + h.rawLen;
-    snapNext = b + (total + 4095) / 4096;
-    return h.count;
-  }
-  historyLog.len = rawLog.len = 0;
-  return -1;
+  snapring::Contents c = snapContents();
+  int n = ring.load(SURVEY_VERSION, c, [](uint32_t seq) {
+    Serial.printf("# snapshot %lu damaged, trying an older one\n", (unsigned long)seq);
+  });
+  historyLog.len = c.aLen;
+  rawLog.len = c.bLen;
+  return n;
 }
 
-bool saveSnapshot() {
-  const struct { const uint8_t *p; size_t n; } parts[] = {
-      {(const uint8_t *)meters, meterCount * sizeof(Meter)},
-      {(const uint8_t *)historyLog.buf, historyLog.len},
-      {(const uint8_t *)rawLog.buf, rawLog.len},
-  };
-  SnapHeader h = {MAGIC_SNAP, ringId, snapSeq + 1, SURVEY_VERSION, (uint16_t)meterCount,
-                  (uint16_t)historyLog.len, (uint16_t)rawLog.len, 0};
-  size_t total = sizeof(h);
-  for (auto &pt : parts) {
-    h.crc = crc32(h.crc, pt.p, pt.n);
-    total += pt.n;
-  }
-  uint32_t blocks = (total + 4095) / 4096;
-  if (snapNext + blocks > ringBlocks) snapNext = 1;  // wrap (block 0 is the ring header)
-  uint8_t sec[512];
-  size_t fill = sizeof(h);
-  memcpy(sec, &h, sizeof(h));
-  uint32_t sector = ringBase + snapNext * 8;
-  bool ok = true;
-  for (auto &pt : parts) {
-    size_t done = 0;
-    while (done < pt.n) {
-      size_t k = min(pt.n - done, sizeof(sec) - fill);
-      memcpy(sec + fill, pt.p + done, k);
-      done += k;
-      fill += k;
-      if (fill == sizeof(sec)) {
-        ok = flash.writeSectors(sector++, sec, 1) && ok;
-        fill = 0;
-      }
-    }
-  }
-  if (fill) {
-    memset(sec + fill, 0xFF, sizeof(sec) - fill);
-    ok = flash.writeSectors(sector, sec, 1) && ok;
-  }
-  ok = flash.syncBlocks() && ok;
-  snapSeq++;
-  snapNext += blocks;
-  return ok;
-}
+bool saveSnapshot() { return ring.save(SURVEY_VERSION, snapContents()); }
 
 // survey.csv for the USB drive, strongest meters first.
 bool writeSurveyCsv() {
@@ -963,52 +718,12 @@ void sortMeters() {
   }
 }
 
-void printCsvHeader(Print &out) {
-  out.println("id,label,mode,mfct,type,ver,litres,alarms,rssi,best_rssi,count,utc,lat,lon,spread_m,samples,"
-              "last_month_litres,last_month_date,battery_years,period_s");
-}
-
-// last_month_litres,last_month_date,battery_years,period_s (empty when unknown)
-void printIzarExtras(Print &out, const Meter &m) {
-  if (!m.hasIzarInfo) {
-    out.print(",,,");
-    return;
-  }
-  if (m.lastMonthDate)
-    out.printf("%lu,%04lu-%02lu-%02lu", (unsigned long)m.lastMonthLitres, (unsigned long)(m.lastMonthDate / 10000),
-               (unsigned long)(m.lastMonthDate / 100 % 100), (unsigned long)(m.lastMonthDate % 100));
-  else
-    out.print(',');
-  out.printf(",%.1f,%lu", m.battHalfYears / 2.0, (unsigned long)m.periodS);
-}
+void printCsvHeader(Print &out) { out.println(SURVEY_HEADER); }
 
 void printMeterCsv(Print &out, const Meter &m) {
-  const char *lbl = getLabel(m.id);
-  char at[48] = "";
-  const char *sn, *ln;
-  typeNames(m, sn, ln);
-  out.printf("%08lx,%s,%s,%s,%s (%02x),%02x,", (unsigned long)m.id, lbl ? lbl : "", modeName(m), m.mfct, ln,
-                m.type, m.ver);
-  if (m.hasLitres) {
-    out.print(m.litres);
-    wmbus::alarmText(m.alarms, at, sizeof(at));
-  }
-  char ts[24] = "";
-  if (m.utc) isoUtc(m.utc, ts, sizeof(ts));
-  out.printf(",%s,%d,%d,%u,%s,", at, m.lastRssi, m.bestRssi, m.count, ts);
-  double lat, lon;
-  float spread;
-  if (estimatePosition(m, lat, lon, spread)) {
-    out.print(lat, 7);
-    out.print(',');
-    out.print(lon, 7);
-    out.printf(",%.1f,%u", spread, m.nSamples);
-  } else {
-    out.print(",,,0");
-  }
-  out.print(',');
-  printIzarExtras(out, m);
-  out.println();
+  char row[ROW_MAX];
+  surveyRow(row, sizeof(row), m, getLabel(m.id));
+  out.println(row);
 }
 
 // ---------- radio ----------
@@ -1053,15 +768,9 @@ int evictSlot() {
 // Before a GPS fix the row has no time; it is still logged, once per power-on.
 void logRaw(Meter &m, const wmbus::Telegram &t, uint32_t now) {
   if (!qspiOk || m.rawThisSession || (now && now < m.rawLoggedUtc + LOG_INTERVAL_S)) return;
-  char line[80 + 2 * wmbus::MAX_FRAME];
-  char ts[24] = "";
-  if (now) isoUtc(now, ts, sizeof(ts));
-  const char *lbl = getLabel(m.id), *sn, *ln;
-  typeNames(m, sn, ln);
-  int n = snprintf(line, sizeof(line), "%s,%08lx,%s,%s,%s,%s (%02x),%d,", ts, (unsigned long)m.id, lbl ? lbl : "",
-                   modeName(m), m.mfct, ln, m.type, m.lastRssi);
-  for (size_t i = 0; i < t.len && n < (int)sizeof(line) - 3; i++) n += snprintf(line + n, sizeof(line) - n, "%02x", t.data[i]);
-  snprintf(line + n, sizeof(line) - n, "\n");
+  char line[ROW_MAX + 1];
+  size_t n = rawRow(line, sizeof(line) - 1, m, getLabel(m.id), t, now);
+  strcpy(line + n, "\n");
   if (!logLine(rawLog, line)) return;
   m.rawThisSession = true;
   if (now) m.rawLoggedUtc = now;
@@ -1076,27 +785,10 @@ void logHistory() {
   if (!now) return;
   for (int i = 0; i < meterCount; i++) {
     Meter &m = meters[i];
-    if (!m.heardSinceLog) continue;
-    if (now < m.loggedUtc + LOG_INTERVAL_S && m.alarms == m.loggedAlarms) continue;
-    char line[200], ts[24], at[48] = "";
-    isoUtc(now, ts, sizeof(ts));
-    const char *lbl = getLabel(m.id), *sn, *ln;
-    typeNames(m, sn, ln);
-    int n = snprintf(line, sizeof(line), "%s,%08lx,%s,%s,%s,", ts, (unsigned long)m.id, lbl ? lbl : "", m.mfct, ln);
-    if (m.hasLitres) {
-      n += snprintf(line + n, sizeof(line) - n, "%lu", (unsigned long)m.litres);
-      wmbus::alarmText(m.alarms, at, sizeof(at));
-    }
-    n += snprintf(line + n, sizeof(line) - n, ",");
-    if (m.hasIzarInfo && m.lastMonthDate)
-      n += snprintf(line + n, sizeof(line) - n, "%lu,%04lu-%02lu-%02lu", (unsigned long)m.lastMonthLitres,
-                    (unsigned long)(m.lastMonthDate / 10000), (unsigned long)(m.lastMonthDate / 100 % 100),
-                    (unsigned long)(m.lastMonthDate % 100));
-    else
-      n += snprintf(line + n, sizeof(line) - n, ",");
-    n += snprintf(line + n, sizeof(line) - n, ",%s,", at);
-    if (m.hasIzarInfo) n += snprintf(line + n, sizeof(line) - n, "%.1f", m.battHalfYears / 2.0);
-    snprintf(line + n, sizeof(line) - n, ",%d\n", m.lastRssi);
+    if (!historyDue(m, now)) continue;
+    char line[ROW_MAX + 1];
+    size_t n = historyRow(line, sizeof(line) - 1, m, getLabel(m.id), now);
+    strcpy(line + n, "\n");
     if (!logLine(historyLog, line)) return;  // full and the computer has the drive: next time
     m.loggedUtc = now;
     m.loggedAlarms = m.alarms;
@@ -1310,7 +1002,7 @@ void drawDiag() {
   if (qspiOk) snprintf(line, sizeof(line), "flash %luK ring %s", (unsigned long)(flash.size() / 1024), ringOk ? "ok" : "off");
   else snprintf(line, sizeof(line), "FLASH FAIL id %06lx", (unsigned long)chipJedecId());
   oled.drawStr(0, 45, line);
-  snprintf(line, sizeof(line), "snap %lu  %d labels%s", (unsigned long)snapSeq, labelCount, fsOk ? "" : " NOSAVE");
+  snprintf(line, sizeof(line), "snap %lu  %d labels%s", (unsigned long)ring.seq, labelCount, fsOk ? "" : " NOSAVE");
   oled.drawStr(0, 54, line);
   uint32_t up = millis() / 60000;
   snprintf(line, sizeof(line), "log %u+%uB up %luh%02lum", (unsigned)historyLog.len, (unsigned)rawLog.len,
@@ -1431,8 +1123,8 @@ void runCommand(char *c) {
     Serial.printf("build %s %s\n", __DATE__, __TIME__);
     Serial.printf("qspi %s, jedec %06lx, %lu KB\n", qspiOk ? "ok" : "FAILED", (unsigned long)chipJedecId(),
                   (unsigned long)(flash.size() / 1024));
-    Serial.printf("ring %s: %lu blocks, snapshot %lu, next block %lu\n", ringOk ? "ok" : "off", (unsigned long)ringBlocks,
-                  (unsigned long)snapSeq, (unsigned long)snapNext);
+    Serial.printf("ring %s: %lu blocks, snapshot %lu, next block %lu\n", ringOk ? "ok" : "off", (unsigned long)ring.blocks,
+                  (unsigned long)ring.seq, (unsigned long)ring.next);
     Serial.printf("internal flash %s, meters %d, labels %d, log rows waiting %u+%u bytes\n", fsOk ? "ok" : "FAILED",
                   meterCount, labelCount, (unsigned)historyLog.len, (unsigned)rawLog.len);
     Serial.printf("usb mounted %d, drive %s\n", TinyUSBDevice.mounted(), driveToHost ? "with computer" : "held");
@@ -1560,7 +1252,7 @@ void setup() {
   char line[32];
   oled.drawStr(0, 22, "built " __DATE__);
   if (qspiOk) snprintf(line, sizeof(line), "flash ok %luK ring %lu", (unsigned long)(flash.size() / 1024),
-                       (unsigned long)ringBlocks);
+                       (unsigned long)ring.blocks);
   else snprintf(line, sizeof(line), "FLASH FAIL id %06lx", (unsigned long)chipJedecId());
   oled.drawStr(0, 32, line);
   snprintf(line, sizeof(line), "%d meters, %d labels", meterCount, labelCount);
