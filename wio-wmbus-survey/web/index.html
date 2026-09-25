@@ -44,12 +44,12 @@
     -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
   .device img { display: block; width: 100%; height: auto; pointer-events: none; }
   #oled {
-    position: absolute; left: 23.52%; top: 33.05%; width: 55.19%; height: 19.2%;
+    position: absolute; left: 23.17%; top: 26.12%; width: 55.87%; height: 21.19%;
     image-rendering: pixelated; background: rgba(0, 0, 0, .55);
     filter: drop-shadow(0 0 1.5px rgba(200, 228, 255, .55));
   }
   /* Around the joystick drags push it instead of scrolling the page (JOY.reach in the script). */
-  #joyzone { position: absolute; left: 67.7%; top: 62.84%; width: 31.11%; height: 21.65%; border-radius: 50%;
+  #joyzone { position: absolute; left: 67.90%; top: 58.99%; width: 31.50%; height: 23.89%; border-radius: 50%;
     touch-action: none; }
   .hit { position: absolute; border-radius: 50%; pointer-events: none; transform: translate(-50%, -50%);
     background: rgba(120, 190, 255, .35); box-shadow: 0 0 12px rgba(120, 190, 255, .6); opacity: 0;
@@ -127,7 +127,7 @@
 
 <section id="deviceview">
 <div class="device" id="device">
-  <img src="wio.webp" alt="Wio Tracker" width="1080" height="1552">
+  <img src="wio.webp" alt="Wio Tracker" width="1080" height="1424">
   <canvas id="oled" width="128" height="64"></canvas>
   <div id="joyzone"></div>
   <div class="hit" id="hit"></div>
@@ -314,11 +314,11 @@ document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('clic
 let savedView = null;
 try { savedView = localStorage.getItem('view'); } catch (e) {}
 setView(savedView === 'plain' ? 'plain' : 'device');
-// Positions in the photo's own pixels (as it was cropped: 2700 x 3880).
-const PHOTO_W = 2700, PHOTO_H = 3880;
-const USER_BTN = { x: 1690, y: 2845, r: 190 };
-const JOY = { x: 2248, y: 2858, knob: 110, reach: 420 };  // knob = press area, reach = direction taps
-const SCREEN = { x0: 635, y0: 1282, x1: 2125, y1: 2028 };
+// Positions in the photo's own pixels (as it was cropped: 2667 x 3516).
+const PHOTO_W = 2667, PHOTO_H = 3516;
+const USER_BTN = { x: 1673, y: 2481, r: 190 };
+const JOY = { x: 2231, y: 2494, knob: 110, reach: 420 };  // knob = press area, reach = direction taps
+const SCREEN = { x0: 618, y0: 918, x1: 2108, y1: 1664 };
 const photo = $('#device'), hit = $('#hit');
 
 function flash(x, y, r) {
