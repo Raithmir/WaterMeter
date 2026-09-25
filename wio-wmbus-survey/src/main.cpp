@@ -1344,7 +1344,7 @@ void drawList() {
     else if (m.alarms & wmbus::ALM_LEAK_PREV) flag = 'l';
     else if (m.alarms) flag = '!';
     // '*' after RSSI = not heard since power-on (values come from the saved survey)
-    snprintf(line, sizeof(line), "%s%c%9s %4d%s", name, flag, val, m.bestRssi, m.thisSession ? "" : "*");
+    snprintf(line, sizeof(line), "%s%c%9s %4d%s", name, flag, val, m.lastRssi, m.thisSession ? "" : "*");
     int y = 18 + r * 9;
     if (top + r == sel) {
       oled.drawBox(0, y - 7, 128, 9);

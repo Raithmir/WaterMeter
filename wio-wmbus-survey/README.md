@@ -48,7 +48,7 @@ Top line: `N48  S9  3.92V` = meters in the table, GPS satellites in view (`S-` =
 - Label (or meter ID if unlabelled)
 - Flag: `L` leaking now, `l` leaked previously, `!` other alarm
 - Reading in m³, or manufacturer + device type (e.g. `KAM cold`) for meters whose reading isn't decoded
-- Best RSSI; `*` = not heard since power-on (values from the saved survey)
+- Last RSSI (the detail view also shows the best); `*` = not heard since power-on (values from the saved survey)
 
 ## Diagnostics screen
 Frames decoded ok / failed (`err` always climbs a little: noise matching the sync word), GPS satellites and fix, battery, whether a computer has the USB drive, QSPI flash and save ring, snapshot count and labels, log bytes waiting to be appended, uptime. The serial `s` command shows the same and more.
