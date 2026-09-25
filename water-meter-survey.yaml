@@ -29,6 +29,9 @@ captive_portal:
 improv_serial:
 
 api:
+  # Don't restart when nothing connects: without Home Assistant nothing ever does,
+  # and a restart would lose the found list
+  reboot_timeout: 0s
 
 # Survey page in a browser at http://<name>.local or the board's IP address:
 # found meters and live logs, no Home Assistant needed
