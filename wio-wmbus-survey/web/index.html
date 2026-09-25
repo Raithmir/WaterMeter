@@ -39,13 +39,24 @@
   .note { font-size: 13px; color: var(--muted); margin: 8px 0; }
   .warn { color: var(--danger); }
 
-  .screen {
-    background: var(--oled); border: 1px solid var(--line); border-radius: 10px; padding: 10px;
+  /* Photo of the tracker; the live screen and touch areas sit on it at % positions of the image. */
+  .device { position: relative; max-width: 420px; margin: 0 auto; touch-action: manipulation;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  .device img { display: block; width: 100%; height: auto; pointer-events: none; }
+  #oled {
+    position: absolute; left: 24.44%; top: 33.57%; width: 52.22%; height: 18.17%;
+    image-rendering: pixelated; background: rgba(0, 0, 0, .55);
+    filter: drop-shadow(0 0 1.5px rgba(200, 228, 255, .55));
   }
-  canvas {
-    display: block; width: 100%; aspect-ratio: 2 / 1; image-rendering: pixelated;
-  }
-
+  /* Around the joystick drags push it instead of scrolling the page (JOY.reach in the script). */
+  #joyzone { position: absolute; left: 67.7%; top: 62.84%; width: 31.11%; height: 21.65%; border-radius: 50%;
+    touch-action: none; }
+  .hit { position: absolute; border-radius: 50%; pointer-events: none; transform: translate(-50%, -50%);
+    background: rgba(120, 190, 255, .35); box-shadow: 0 0 12px rgba(120, 190, 255, .6); opacity: 0;
+    transition: opacity .12s; }
+  .hit.on { opacity: 1; transition: none; }
+  .screen { background: var(--oled); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+  #big { display: block; width: 100%; aspect-ratio: 2 / 1; image-rendering: pixelated; }
   .controls { display: flex; align-items: center; justify-content: space-between; margin: 14px 0 6px; gap: 12px; }
   .pad { display: grid; grid-template-columns: repeat(3, 62px); grid-template-rows: repeat(3, 62px); gap: 6px; }
   .pad button { padding: 0; font-size: 22px; border-radius: 12px; }
@@ -53,6 +64,13 @@
   .pad .r { grid-area: 2 / 3; } .pad .d { grid-area: 3 / 2; }
   .side { display: flex; flex-direction: column; gap: 8px; align-items: stretch; flex: 1; max-width: 170px; }
   .side .note { margin: 0; }
+  .views { display: flex; justify-content: flex-end; margin: -4px 0 10px; }
+  .views button { padding: 5px 12px; font-size: 13px; color: var(--muted); }
+  .views button:first-child { border-radius: 8px 0 0 8px; }
+  .views button:last-child { border-radius: 0 8px 8px 0; border-left: none; }
+  .views button[aria-pressed="true"] { color: var(--text); background: #21262d; }
+  .hint { text-align: center; }
+
 
   .tabs { display: flex; gap: 6px; margin-top: 18px; border-bottom: 1px solid var(--line); }
   .tabs button { border: none; border-radius: 8px 8px 0 0; background: none; color: var(--muted); }
@@ -85,21 +103,38 @@
   This browser has no Web Bluetooth. Use Chrome on Android (or Chrome/Edge on a computer).
 </p>
 
-<div class="screen"><canvas id="oled" width="128" height="64"></canvas></div>
-
-<div class="controls">
-  <div class="pad">
-    <button class="u" data-key="U" aria-label="Up">▲</button>
-    <button class="l" data-key="L" aria-label="Left">◀</button>
-    <button class="p" data-key="P" aria-label="Press">OK</button>
-    <button class="r" data-key="R" aria-label="Right">▶</button>
-    <button class="d" data-key="D" aria-label="Down">▼</button>
-  </div>
-  <div class="side">
-    <button data-key="B">User button</button>
-    <p class="note">Left from the list opens Settings, right opens Diagnostics.</p>
-  </div>
+<div class="views" role="group" aria-label="View">
+  <button data-view="device" aria-pressed="true">Device</button>
+  <button data-view="plain" aria-pressed="false">Plain</button>
 </div>
+
+<section id="plainview" hidden>
+  <div class="screen"><canvas id="big" width="128" height="64"></canvas></div>
+  <div class="controls">
+    <div class="pad">
+      <button class="u" data-key="U" aria-label="Up">▲</button>
+      <button class="l" data-key="L" aria-label="Left">◀</button>
+      <button class="p" data-key="P" aria-label="Press">OK</button>
+      <button class="r" data-key="R" aria-label="Right">▶</button>
+      <button class="d" data-key="D" aria-label="Down">▼</button>
+    </div>
+    <div class="side">
+      <button data-key="B">User button</button>
+      <p class="note">Left from the list opens Settings, right opens Diagnostics.</p>
+    </div>
+  </div>
+</section>
+
+<section id="deviceview">
+<div class="device" id="device">
+  <img src="wio.webp" alt="Wio Tracker" width="1080" height="1552">
+  <canvas id="oled" width="128" height="64"></canvas>
+  <div id="joyzone"></div>
+  <div class="hit" id="hit"></div>
+</div>
+<p class="note hint">Tap around the joystick to push it that way (or drag from its middle), tap the middle to press.
+  Tapping the screen switches to the plain view. Left from the list opens Settings, right opens Diagnostics.</p>
+</section>
 
 <div class="tabs" role="tablist">
   <button role="tab" aria-selected="true" data-tab="logtab">Log</button>
@@ -140,8 +175,8 @@ let device = null, keysChr = null, rxChr = null;
 
 // ---- screen: 8 pages x 128 columns, one byte = 8 pixels down (lowest bit on top) ----
 const fb = new Uint8Array(1024);
-const canvas = $('#oled'), ctx = canvas.getContext('2d');
-const img = ctx.createImageData(128, 64);
+const ctx = $('#oled').getContext('2d'), bigCtx = $('#big').getContext('2d');
+const img = ctx.createImageData(128, 64), bigImg = bigCtx.createImageData(128, 64);
 const css = getComputedStyle(document.documentElement);
 const hex = (v) => v.trim().match(/\w\w/g).map((h) => parseInt(h, 16));
 const ON = hex(css.getPropertyValue('--pixel')), OFF = hex(css.getPropertyValue('--oled'));
@@ -150,12 +185,18 @@ function draw() {
   drawQueued = false;
   for (let y = 0; y < 64; y++) {
     for (let x = 0; x < 128; x++) {
-      const c = (fb[(y >> 3) * 128 + x] >> (y & 7)) & 1 ? ON : OFF;
+      const on = (fb[(y >> 3) * 128 + x] >> (y & 7)) & 1;
+      const c = on ? ON : OFF;
       const i = (y * 128 + x) * 4;
-      img.data[i] = c[0]; img.data[i + 1] = c[1]; img.data[i + 2] = c[2]; img.data[i + 3] = 255;
+      img.data[i] = bigImg.data[i] = c[0];
+      img.data[i + 1] = bigImg.data[i + 1] = c[1];
+      img.data[i + 2] = bigImg.data[i + 2] = c[2];
+      img.data[i + 3] = on ? 255 : 0;  // the glass in the photo shows through
+      bigImg.data[i + 3] = 255;
     }
   }
   ctx.putImageData(img, 0, 0);
+  bigCtx.putImageData(bigImg, 0, 0);
 }
 draw();
 function onScreen(e) {
@@ -244,7 +285,7 @@ function sendKey(code) {
   if (keysChr) gatt(() => keysChr.writeValueWithoutResponse(new Uint8Array([code])));
 }
 
-// Held arrows repeat like the joystick: after 400 ms, every 80 ms (flagged as repeats).
+// Held directions repeat like the joystick: after 400 ms, every 80 ms (flagged as repeats).
 const REPEATING = 'UDLR';
 function bindKey(el, key) {
   let delay = null, every = null;
@@ -261,6 +302,89 @@ function bindKey(el, key) {
   el.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 document.querySelectorAll('[data-key]').forEach((b) => bindKey(b, b.dataset.key));
+
+// Device view (photo) or plain view (big screen + buttons), remembered on this phone.
+function setView(v) {
+  document.querySelectorAll('[data-view]').forEach((b) => b.setAttribute('aria-pressed', b.dataset.view === v));
+  $('#deviceview').hidden = v !== 'device';
+  $('#plainview').hidden = v !== 'plain';
+  try { localStorage.setItem('view', v); } catch (e) {}
+}
+document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+let savedView = null;
+try { savedView = localStorage.getItem('view'); } catch (e) {}
+setView(savedView === 'plain' ? 'plain' : 'device');
+// Positions in the photo's own pixels (as it was cropped: 2700 x 3880).
+const PHOTO_W = 2700, PHOTO_H = 3880;
+const USER_BTN = { x: 1690, y: 2845, r: 190 };
+const JOY = { x: 2248, y: 2858, knob: 110, reach: 420 };  // knob = press area, reach = direction taps
+const SCREEN = { x0: 660, y0: 1302, x1: 2070, y1: 2008 };
+const photo = $('#device'), hit = $('#hit');
+
+function flash(x, y, r) {
+  const w = photo.clientWidth / PHOTO_W;
+  hit.style.left = x * w + 'px';
+  hit.style.top = y * w + 'px';
+  hit.style.width = hit.style.height = 2 * r * w + 'px';
+  hit.classList.add('on');
+}
+function unflash() { hit.classList.remove('on'); }
+
+// Direction of a point from the joystick centre, and where to light it up.
+function direction(dx, dy) {
+  const k = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U');
+  const off = { U: [0, -1], D: [0, 1], L: [-1, 0], R: [1, 0] }[k];
+  return { key: k, x: JOY.x + off[0] * 130, y: JOY.y + off[1] * 130 };
+}
+
+let hold = null;  // {delay, every} timers for a held direction
+function stopHold() {
+  if (hold) { clearTimeout(hold.delay); clearInterval(hold.every); }
+  hold = null;
+}
+function pushDir(d) {
+  stopHold();
+  flash(d.x, d.y, 55);
+  const code = d.key.charCodeAt(0);
+  sendKey(code);
+  hold = { delay: setTimeout(() => { hold.every = setInterval(() => sendKey(code | 0x80), 80); }, 400) };
+}
+
+let gesture = null;  // pointer on the knob: a tap presses, a drag pushes that way
+photo.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  const rect = photo.getBoundingClientRect();
+  const x = (e.clientX - rect.left) * PHOTO_W / rect.width, y = (e.clientY - rect.top) * PHOTO_W / rect.width;
+  const dUser = Math.hypot(x - USER_BTN.x, y - USER_BTN.y), dJoy = Math.hypot(x - JOY.x, y - JOY.y);
+  if (x >= SCREEN.x0 && x <= SCREEN.x1 && y >= SCREEN.y0 && y <= SCREEN.y1) {
+    setView('plain');
+  } else if (dUser < USER_BTN.r && dUser < dJoy) {
+    flash(USER_BTN.x, USER_BTN.y, 120);
+    sendKey('B'.charCodeAt(0));
+  } else if (dJoy < JOY.knob) {
+    photo.setPointerCapture(e.pointerId);
+    gesture = { x: e.clientX, y: e.clientY, dragged: false };
+    flash(JOY.x, JOY.y, 70);
+  } else if (dJoy < JOY.reach) {
+    photo.setPointerCapture(e.pointerId);
+    pushDir(direction(x - JOY.x, y - JOY.y));
+  }
+});
+photo.addEventListener('pointermove', (e) => {
+  if (!gesture || gesture.dragged) return;
+  const dx = e.clientX - gesture.x, dy = e.clientY - gesture.y;
+  if (Math.hypot(dx, dy) < 14) return;
+  gesture.dragged = true;
+  pushDir(direction(dx, dy));
+});
+function release() {
+  if (gesture && !gesture.dragged) sendKey('P'.charCodeAt(0));
+  gesture = null;
+  stopHold();
+  setTimeout(unflash, 80);
+}
+['pointerup', 'pointercancel'].forEach((t) => photo.addEventListener(t, release));
+photo.addEventListener('contextmenu', (e) => e.preventDefault());
 
 const KEYMAP = { ArrowUp: 'U', ArrowDown: 'D', ArrowLeft: 'L', ArrowRight: 'R', Enter: 'P', ' ': 'P', b: 'B' };
 document.addEventListener('keydown', (e) => {
