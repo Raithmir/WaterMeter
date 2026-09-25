@@ -33,10 +33,13 @@ Up/down picks a setting, press changes it (screen off steps through its choices)
 The top line shows the Bluetooth name (`WMBUS-` + 4 characters unique to the tracker).
 
 ## Bluetooth (phone page)
-`web/index.html` is a page for Chrome on Android (or Chrome/Edge on a computer; iPhone Safari has no Web Bluetooth). It shows the tracker's screen live, has the joystick and user button, a log of what the tracker prints on serial with a box for serial commands, and downloads `survey.csv`, `history.csv` and `raw.csv` without a cable. The tracker keeps listening while it does.
+The phone page is at **https://raithmir.github.io/WaterMeter/wio-wmbus-survey/web/** (source in `web/`). It works in Chrome on Android, or Chrome/Edge on a computer; iPhone Safari has no Web Bluetooth.
+- Device view: the tracker's screen live on a photo of the tracker; tap around the joystick to push it, its middle to press, and the user button. Plain view: a big screen with arrow buttons
+- Log: what the tracker prints on serial, with a box for serial commands
+- Files: downloads `survey.csv`, `history.csv` and `raw.csv` without a cable. The tracker keeps listening while it does
 
 1. Settings → Bluetooth → on
-2. Open the page (it has to come from an `https://` address, e.g. GitHub Pages, for the browser to allow Bluetooth), press Connect and pick `WMBUS-xxxx`
+2. Open [the page](https://raithmir.github.io/WaterMeter/wio-wmbus-survey/web/), press Connect and pick `WMBUS-xxxx`
 3. The first time, the tracker shows a 6-digit code and the phone asks for it. After that the phone reconnects without it
 
 With a phone watching, the screen is kept up to date for it even while the tracker's own screen is off, and buttons pressed on the page don't turn the tracker's screen on. The link needs the pairing code, so nobody else nearby can connect. The console uses the standard Nordic UART service, so BLE serial terminal apps (e.g. nRF Toolbox, Serial Bluetooth Terminal) work too once paired.
