@@ -58,36 +58,83 @@ Notes:
 
 ## Usage
 
+### New to ESPHome?
+
+[ESPHome](https://esphome.io) turns a YAML file into firmware for the board. You need:
+
+- One of the boards above and a USB-C **data** cable (some cables only charge).
+- ESPHome, installed one of two ways:
+  - **In Home Assistant:** install the ESPHome Device Builder add-on (Settings → Add-ons). Create a new device, replace its YAML with the contents of the config from this repo, then choose Install.
+  - **On your computer:** `pip install esphome`, then use the `esphome` commands shown below.
+
+Every config has placeholders to fill in before you compile:
+
+| Placeholder | Replace with |
+|---|---|
+| `YOUR_WIFI_SSID` | Your Wi-Fi network name |
+| `YOUR_WIFI_PASSWORD` | Your Wi-Fi password |
+| `YOUR_METER_ID` | Your meter ID with a `0x` prefix, e.g. `0x2124589C` (gateway configs only; see step 2) |
+
+The first flash of a new board must be over USB. After that, ESPHome can update it over Wi-Fi (OTA). Once the board is on your Wi-Fi, Home Assistant should discover it under Settings → Devices & services. Add it there to get the entities.
+
 ### 1. Survey: find your meter ID
 
-1. Flash `water-meter-survey.yaml` to the Heltec.
-2. Watch the logs; each frame shows its meter ID, raw hex and RSSI. The OLED shows a frame count and the strongest meter.
-3. Confirm your meter by matching the decoded `prefix` and `serial_number` against the markings on the meter body.
-4. Check the decoded `total_m3` against the dial.
+Every wM-Bus meter broadcasts an 8-character hexadecimal ID, for example `2124589C`. The gateway only decodes the meter whose ID you give it, so you need this ID first.
 
-On an estate with identical properties, several Diehl meters will usually be visible. The strongest signal is not always yours, so confirm by serial number.
+- The ID is **not** the serial number printed on the meter, so you can't read it off the meter body. Listen for it with the survey config.
+- Your neighbours' meters broadcast too, so expect to see several IDs.
 
-### 2. Reader: run the gateway
+Steps:
 
-Set your values in the gateway config:
+1. Put your Wi-Fi details in `water-meter-survey.yaml`, plug the Heltec in over USB and run:
+
+   ```bash
+   esphome run water-meter-survey.yaml
+   ```
+
+   Pick the USB port when asked. Once the upload finishes, the command keeps showing the device logs. To watch the logs again later, run `esphome logs water-meter-survey.yaml`.
+2. Take the board close to your water meter and watch for lines like this:
+
+   ```
+   [I][survey:...]: NEW meter 2124589C  -58dBm  b8=..  (total 1)
+   ```
+
+   `2124589C` is the meter ID. `NEW meter` lines only appear for Diehl meters heard twice at -70 dBm or stronger. The `FRAME` lines log every frame, from any brand and at any signal strength.
+3. The same information appears in two other places:
+   - **OLED:** the large text shows the ID of the strongest meter heard in the last few seconds. Short press PRG to step through the found meters, and long press to clear the list.
+   - **Home Assistant:** the `Survey Found Meters` sensor lists the found meters as `ID:RSSI:b8`.
+4. Your meter is usually the one whose signal (RSSI, in dBm, closer to 0 is stronger) rises clearly above the rest when you hold the board next to it. On an estate with identical properties, the strongest signal is not always yours, so confirm it in one of two ways:
+   - **Check the serial number:** copy the `HEX:` value from a `FRAME` line for that meter into the [wmbusmeters analyzer](https://wmbusmeters.org/analyze/). Compare the decoded `prefix` and `serial_number` with the markings on the meter, and `total_m3` with the dial.
+   - **Test it in the gateway:** follow step 2 with that ID and check that Water Total matches the dial.
+
+Don't try to read the ID from the raw hex. The ID bytes are stored in reverse order, so `2124589C` appears in the frame as `...304C9C582421...`. Use the ID the survey prints.
+
+Have the Wio Tracker L1? The [`wio-wmbus-survey`](wio-wmbus-survey/) firmware lists the same IDs on its screen and in `survey.csv`.
+
+### 2. Reader: add the ID to the gateway
+
+Open the gateway config (`water-meter-gateway.yaml` or `water-meter-gateway-xiao.yaml`), fill in your Wi-Fi details, and replace `YOUR_METER_ID` with your ID. Put `0x` in front of the ID:
 
 ```yaml
-wifi:
-  ssid: "YOUR_SSID"
-  password: "YOUR_WIFI_PASSWORD"
-
 wmbus_meter:
-  - id: water_meter
-    meter_id: 0xXXXXXXXX
+  - id: water_meter         # leave this as it is: the config's internal name
+    meter_id: 0x2124589C    # 0x + the 8 characters from the survey
 ```
 
-Then compile and flash:
+- **Put `0x` in front of the ID.** ESPHome reads `meter_id` as a number, and `0x` tells it the number is hexadecimal:
+  - Without `0x`, an ID that contains only digits, such as `12345678`, is read as a decimal number. That listens for a different meter (`0xBC614E`), so the config compiles but the gateway never receives a reading.
+  - Without `0x`, an ID that contains letters fails with `Expected integer, but cannot parse ... as an integer`.
+- Use the ID from the survey, not the serial number printed on the meter.
+- Upper or lower case both work, and quotes are optional.
+- Don't change `id: water_meter`. The rest of the config uses that name to find the meter.
+
+Then compile and flash, over USB the first time:
 
 ```bash
 esphome run water-meter-gateway.yaml
 ```
 
-After the first flash, updates can be sent over OTA.
+Within a minute or so the logs should show a reading, and Water Total should appear in Home Assistant. If nothing arrives, check the ID first. After the first flash, you can send updates over OTA.
 
 ### Entities exposed to Home Assistant
 
@@ -120,6 +167,8 @@ esptool --chip esp32s3 --baud 460800 write-flash 0x0 firmware.factory.bin
 
 | Symptom | Check |
 |---|---|
+| Gateway runs but never shows a reading | `meter_id` has the `0x` prefix and matches the survey ID (not the serial on the meter) |
+| `Expected integer, but cannot parse ...` | `meter_id` is missing its `0x` prefix |
 | Compile error: `logger` shadowed | Keep the `components:` filter on `external_components` |
 | `wmbus_meter` needs time | A `time:` platform (`homeassistant`) must be present |
 | XIAO receives nothing | GPIO38 held high, antenna on the LoRa U.FL port |
