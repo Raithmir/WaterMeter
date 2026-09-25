@@ -44,7 +44,7 @@
     -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
   .device img { display: block; width: 100%; height: auto; pointer-events: none; }
   #oled {
-    position: absolute; left: 24.44%; top: 33.57%; width: 52.22%; height: 18.17%;
+    position: absolute; left: 22.96%; top: 33.05%; width: 55.19%; height: 19.2%;
     image-rendering: pixelated; background: rgba(0, 0, 0, .55);
     filter: drop-shadow(0 0 1.5px rgba(200, 228, 255, .55));
   }
@@ -318,7 +318,7 @@ setView(savedView === 'plain' ? 'plain' : 'device');
 const PHOTO_W = 2700, PHOTO_H = 3880;
 const USER_BTN = { x: 1690, y: 2845, r: 190 };
 const JOY = { x: 2248, y: 2858, knob: 110, reach: 420 };  // knob = press area, reach = direction taps
-const SCREEN = { x0: 660, y0: 1302, x1: 2070, y1: 2008 };
+const SCREEN = { x0: 620, y0: 1282, x1: 2110, y1: 2028 };
 const photo = $('#device'), hit = $('#hit');
 
 function flash(x, y, r) {
