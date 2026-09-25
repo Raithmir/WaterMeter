@@ -65,6 +65,14 @@ switch:
     restore_mode: ALWAYS_ON
     internal: true
 
+script:
+  - id: blink_led
+    mode: restart
+    then:
+      - output.turn_on: status_led
+      - delay: 200ms
+      - output.turn_off: status_led
+
 # Wio-SX1262 kit, B2B connector
 spi:
   clk_pin: GPIO7
@@ -90,9 +98,8 @@ wmbus_meter:
     on_telegram:
       then:
         - lambda: 'id(last_telegram_ms) = millis();'
-        - output.turn_on: status_led
-        - delay: 200ms
-        - output.turn_off: status_led
+        # A delay here would copy the meter argument (compile error), so blink in a script
+        - script.execute: blink_led
 
 sensor:
   - platform: wmbus_meter
