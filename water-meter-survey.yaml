@@ -30,6 +30,11 @@ improv_serial:
 
 api:
 
+# Survey page in a browser at http://<name>.local or the board's IP address:
+# found meters and live logs, no Home Assistant needed
+web_server:
+  port: 80
+
 ota:
   - platform: esphome
 
@@ -83,6 +88,39 @@ spi:
   mosi_pin: GPIO10
   miso_pin: GPIO11
 
+script:
+  # Publishes the found list (strongest first) for Home Assistant and the web page,
+  # and optionally logs it in full so any log view catches up
+  - id: report_found
+    parameters:
+      log_list: bool
+    then:
+      - lambda: |-
+          auto &ids = id(found_ids);
+          std::vector<size_t> order(ids.size());
+          for (size_t i = 0; i < order.size(); i++) order[i] = i;
+          std::sort(order.begin(), order.end(), [](size_t a, size_t b) {
+            return id(found_rssis)[a] > id(found_rssis)[b];
+          });
+          // Home Assistant rejects states over 255 characters: keep the strongest that fit
+          std::string out;
+          for (size_t i : order) {
+            char item[24];
+            snprintf(item, sizeof(item), "0x%s %ddBm", ids[i].c_str(), id(found_rssis)[i]);
+            size_t add = strlen(item) + (out.empty() ? 0 : 2);
+            if (out.size() + add > 255) break;
+            if (!out.empty()) out += ", ";
+            out += item;
+          }
+          if (!id(found_list).has_state() || id(found_list).state != out)
+            id(found_list).publish_state(out);
+          if (log_list) {
+            ESP_LOGI("survey", "Found %d meter(s), strongest first:", (int) ids.size());
+            for (size_t i : order)
+              ESP_LOGI("survey", "  0x%s  %ddBm  b8=%02X",
+                       ids[i].c_str(), id(found_rssis)[i], id(found_byte8s)[i]);
+          }
+
 wmbus_radio:
   radio_type: SX1262
   cs_pin: GPIO8
@@ -102,6 +140,10 @@ wmbus_radio:
             uint16_t m = d[2] | (d[3] << 8);
             bool diehl = (m == 0x4C30);
             uint32_t now = millis();
+
+            // Only Diehl frames: other brands are no use here and bury the lines that matter
+            if (diehl)
+              ESP_LOGI("survey", "FRAME  RSSI: %ddBm  HEX: %s", rssi, frame->as_hex().c_str());
 
             char buf[9];
             snprintf(buf, sizeof(buf), "%02X%02X%02X%02X", d[7], d[6], d[5], d[4]);
@@ -144,17 +186,9 @@ wmbus_radio:
                     id(found_byte8s).push_back(d[8]);
                     pids.erase(pids.begin() + i);
                     id(pending_rssis).erase(id(pending_rssis).begin() + i);
-                    ESP_LOGI("survey", "NEW meter %s  %ddBm  b8=%02X  (total %d)",
+                    ESP_LOGI("survey", "NEW meter 0x%s  %ddBm  b8=%02X  (total %d)",
                              sid.c_str(), rssi, d[8], (int) ids.size());
-                    std::string out;
-                    for (size_t j = 0; j < ids.size(); j++) {
-                      char line[32];
-                      snprintf(line, sizeof(line), "%s:%d:%02X",
-                               ids[j].c_str(), id(found_rssis)[j], id(found_byte8s)[j]);
-                      if (j) out += ", ";
-                      out += line;
-                    }
-                    id(found_list).publish_state(out);
+                    id(report_found).execute(false);
                     break;
                   }
                 }
@@ -165,9 +199,13 @@ wmbus_radio:
                 }
               }
             }
-        - logger.log:
-            format: "FRAME  RSSI: %ddBm  HEX: %s"
-            args: [ frame->rssi(), frame->as_hex().c_str() ]
+
+interval:
+  - interval: 30s
+    then:
+      - script.execute:
+          id: report_found
+          log_list: true
 
 text_sensor:
   - platform: template
@@ -204,6 +242,7 @@ binary_sensor:
               id(pending_ids).clear();
               id(pending_rssis).clear();
               id(view_index) = -1;
+              id(report_found).execute(false);
 
 switch:
   - platform: gpio

@@ -9,7 +9,7 @@ Built on [SzczepanLeon/esphome-components](https://github.com/SzczepanLeon/espho
 | File | Hardware | Purpose |
 |---|---|---|
 | `water-meter-survey.yaml` | Heltec WiFi LoRa 32 V3 | Survey: logs every wM-Bus frame to find your meter ID |
-| `water-meter-survey-xiao.yaml` | Seeed XIAO ESP32S3 + Wio-SX1262 kit | Survey: the same, headless (results in the logs and Home Assistant) |
+| `water-meter-survey-xiao.yaml` | Seeed XIAO ESP32S3 + Wio-SX1262 kit | Survey: the same, headless (results in the logs, on a web page and in Home Assistant) |
 | `water-meter-gateway.yaml` | Heltec WiFi LoRa 32 V3 | Reader: fixed gateway with OLED display |
 | `water-meter-gateway-xiao.yaml` | Seeed XIAO ESP32S3 + Wio-SX1262 kit | Reader: headless gateway, lower-cost hardware |
 
@@ -94,7 +94,7 @@ You don't need to install ESPHome to find the ID. The survey needs no meter ID, 
 1. Download the survey firmware for your board from the [latest release](https://github.com/Raithmir/WaterMeter/releases/latest): `water-meter-survey.factory.bin` for the Heltec or `water-meter-survey-xiao.factory.bin` for the XIAO. (For the Wio Tracker L1, use `wio-tracker-survey.uf2` and follow the [Wio instructions](wio-wmbus-survey/).)
 2. Plug the board in over USB, open [web.esphome.io](https://web.esphome.io) and choose **Connect**, then pick the board's port. If no port appears or the connection fails, put the board in bootloader mode first (see [Flashing](#flashing)).
 3. Choose **Install**, select the `.bin` file you downloaded and wait for the upload to finish. Press RST (Heltec) or unplug and replug (XIAO) afterwards.
-4. Optional: choose **Connect** again, then **Configure Wi-Fi** to put the board on your network so Home Assistant can find it. Without Wi-Fi, the survey still works over USB.
+4. Optional: choose **Connect** again, then **Configure Wi-Fi** to put the board on your network. Then **Visit Device** opens the board's web page (see step 3 below), and Home Assistant can find it. Without Wi-Fi, the survey still works over USB.
 5. Choose **Logs** and carry on from step 2 below.
 
 #### Building it yourself
@@ -109,14 +109,23 @@ You don't need to install ESPHome to find the ID. The survey needs no meter ID, 
 2. Take the board close to your water meter and watch for lines like this:
 
    ```
-   [I][survey:...]: NEW meter 2124589C  -58dBm  b8=..  (total 1)
+   [I][survey:...]: NEW meter 0x2124589C  -58dBm  b8=..  (total 1)
    ```
 
-   `2124589C` is the meter ID. `NEW meter` lines only appear for Diehl meters heard twice at -70 dBm or stronger. The `FRAME` lines log every frame, from any brand and at any signal strength.
+   `0x2124589C` is the meter ID, already in the form the gateway config needs. `NEW meter` lines only appear for Diehl meters heard twice at -70 dBm or stronger. Every 30 seconds the survey also logs the whole list, strongest first, so you can catch up whenever you open the logs:
+
+   ```
+   [I][survey:...]: Found 3 meter(s), strongest first:
+   [I][survey:...]:   0x2124589C  -52dBm  b8=..
+   [I][survey:...]:   0x21245A11  -63dBm  b8=..
+   ```
+
+   The `FRAME` lines log every frame from a Diehl meter, at any signal strength. Frames from other brands aren't logged.
 3. The same information appears in other places:
+   - **Web page:** open `http://water-meter-survey.local` (Heltec) or `http://water-meter-survey-xiao.local` (XIAO) in a browser on the same Wi-Fi. It shows the found meters and the live logs, and on the XIAO also the strongest meter and a button to clear the list. You don't need Home Assistant for this. If the `.local` address doesn't open, which happens on some phones and PCs, use the board's IP address from your router's list of connected devices.
    - **Heltec OLED:** the large text shows the ID of the strongest meter heard in the last few seconds. Short press PRG to step through the found meters, and long press to clear the list.
    - **XIAO LED:** blinks for each frame from a Diehl meter at -70 dBm or stronger, so it blinks more as you get close to one.
-   - **Home Assistant:** the `Survey Found Meters` sensor lists the found meters as `ID:RSSI:b8`. The XIAO survey also has `Survey Strongest Meter` and `Survey Strongest RSSI` (the strongest meter heard in the last few seconds, like the Heltec's OLED) and a `Survey Clear Found Meters` button.
+   - **Home Assistant:** the `Survey Found Meters` sensor lists the found meters strongest first, e.g. `0x2124589C -52dBm, 0x21245A11 -63dBm`. Home Assistant limits a sensor to 255 characters, so on a busy estate only the strongest 15 or so fit. The 30-second log line always has the full list. The XIAO survey also has `Survey Strongest Meter` and `Survey Strongest RSSI` (the strongest meter heard in the last few seconds, like the Heltec's OLED) and a `Survey Clear Found Meters` button.
 4. Your meter is usually the one whose signal (RSSI, in dBm, closer to 0 is stronger) rises clearly above the rest when you hold the board next to it. On an estate with identical properties, the strongest signal is not always yours, so confirm it in one of two ways:
    - **Check the serial number:** copy the `HEX:` value from a `FRAME` line for that meter into the [wmbusmeters analyzer](https://wmbusmeters.org/analyze/). Compare the decoded `prefix` and `serial_number` with the markings on the meter, and `total_m3` with the dial.
    - **Test it in the gateway:** follow step 2 with that ID and check that Water Total matches the dial.
@@ -125,17 +134,30 @@ Don't try to read the ID from the raw hex. The ID bytes are stored in reverse or
 
 Have the Wio Tracker L1? The [`wio-wmbus-survey`](wio-wmbus-survey/) firmware lists the same IDs on its screen and in `survey.csv`.
 
+#### Powering the board while you walk
+
+The meter is often outside or under a cover, away from a computer. You don't need one there, because any USB power works:
+
+- **A USB power bank.** Some power banks switch off after a while if the device draws only a little current. If the board switches off after a few seconds or minutes, try a different power bank.
+- **Your phone.** Most Android phones with USB-C, and iPhones with USB-C (iPhone 15 and later), can power the board through a USB-C to USB-C cable. Some Android phones need USB power output or OTG switched on.
+- **A LiPo battery.** Both the Heltec and the XIAO kit have a battery connector and charge the battery over USB.
+
+Away from Wi-Fi, how you see the results depends on the board:
+
+- **Heltec:** read the ID and signal on the OLED.
+- **XIAO:** the LED blinks each time it hears a Diehl meter at -70 dBm or stronger, so it blinks more often the closer you are to one. The list of found meters is kept in memory, so keep the board powered and walk back into Wi-Fi range. Then open the web page or Home Assistant, or connect to the logs, and within 30 seconds the full list appears. Unplugging the board clears the list, unless a LiPo battery keeps it running.
+
 ### 2. Reader: add the ID to the gateway
 
-Open the gateway config (`water-meter-gateway.yaml` or `water-meter-gateway-xiao.yaml`), fill in your Wi-Fi details, and replace `YOUR_METER_ID` with your ID. Put `0x` in front of the ID:
+Open the gateway config (`water-meter-gateway.yaml` or `water-meter-gateway-xiao.yaml`), fill in your Wi-Fi details, and replace `YOUR_METER_ID` with your ID. The survey shows IDs with `0x` already in front, so copy the whole thing:
 
 ```yaml
 wmbus_meter:
   - id: water_meter         # leave this as it is: the config's internal name
-    meter_id: 0x2124589C    # 0x + the 8 characters from the survey
+    meter_id: 0x2124589C    # exactly as the survey shows it, 0x included
 ```
 
-- **Put `0x` in front of the ID.** ESPHome reads `meter_id` as a number, and `0x` tells it the number is hexadecimal:
+- **Keep the `0x` in front of the ID** (add it if you got the ID elsewhere, e.g. from the Wio survey). ESPHome reads `meter_id` as a number, and `0x` tells it the number is hexadecimal:
   - Without `0x`, an ID that contains only digits, such as `12345678`, is read as a decimal number. That listens for a different meter (`0xBC614E`), so the config compiles but the gateway never receives a reading.
   - Without `0x`, an ID that contains letters fails with `Expected integer, but cannot parse ... as an integer`.
 - Use the ID from the survey, not the serial number printed on the meter.
