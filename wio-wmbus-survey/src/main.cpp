@@ -9,6 +9,7 @@
 #include <InternalFileSystem.h>
 #include <Adafruit_SPIFlash.h>
 #include <Adafruit_TinyUSB.h>
+#include <bluefruit.h>
 #include <cmath>
 #include "wmbus.h"
 #include "survey.h"
@@ -28,7 +29,6 @@ using Adafruit_LittleFS_Namespace::FILE_O_WRITE;
 #define SURVEY_SAVE_MS 30000     // save survey at most this often (only when something worth keeping changed)
 #define FALLBACK_SAVE_MS 600000  // without the snapshot ring (internal flash: ~10k erase cycles)
 #define LABEL_SAVE_MS 3000       // save labels this long after the last edit
-#define SCREEN_OFF_MS 120000     // screen off after this long without a button press (0 = never)
 #define LOW_BATT_V 3.50f         // warn below this (LiPo), cleared again above LOW_BATT_V + 0.1
 #define GPS_MAX_AGE_MS 1500      // position samples need a fix at most this old
 #define GPS_MAX_HDOP 2.5         // ... and at least this good (HDOP ~1 = good, >2.5 = metres worse)
@@ -41,6 +41,8 @@ using Adafruit_LittleFS_Namespace::FILE_O_WRITE;
 #define DRIVE_LABEL "WMBUS"
 #define LABEL_FILE "/labels.bin"
 #define FILE_VERSION_LABELS 2
+#define SETTINGS_FILE "/settings.bin"  // internal flash, saved LABEL_SAVE_MS after the last change
+#define FILE_VERSION_SETTINGS 1
 #define SURVEY_VERSION 3         // 3 added IZAR last-month/battery/period and log state.
                                  // Changing Meter (survey.h) means a new version AND a conversion in
                                  // loadSnapshot(), or the saved survey is dropped on upgrade.
@@ -150,7 +152,6 @@ bool screenOn = true;
 uint32_t lastInput = 0;  // last button press, for the screen timeout
 float battV = 0;         // smoothed battery voltage
 bool battLow = false;
-bool sortByRssi = true;
 uint32_t okCount = 0, errCount = 0;
 bool surveyDirty = false, labelsDirty = false;
 uint32_t lastSurveySave = 0, lastLabelEdit = 0;
@@ -163,12 +164,44 @@ bool driveToHost = false;
 volatile bool rxFlag = false;
 uint8_t raw[255];
 
+// Settings screen (joystick left from the list). Adding a field means a new FILE_VERSION_SETTINGS;
+// an older file is then ignored and the defaults used.
+const uint32_t SCREEN_OFF_CHOICES[] = {30000, 60000, 120000, 300000, 0};  // 0 = never
+const char *const SCREEN_OFF_NAMES[] = {"30 s", "1 min", "2 min", "5 min", "never"};
+const int N_SCREEN_OFF = sizeof(SCREEN_OFF_CHOICES) / sizeof(SCREEN_OFF_CHOICES[0]);
+struct Settings {
+  bool ble;           // Bluetooth link to the phone page
+  bool gps;           // off = GPS module in standby (saves power, no positions)
+  uint8_t screenOff;  // index into SCREEN_OFF_CHOICES
+  bool beeps;
+  bool sortByRssi;    // also toggled by the user button
+} settings = {false, true, 2, true, true};
+bool settingsDirty = false;
+uint32_t lastSettingsEdit = 0;
+
+// Log output: USB serial, plus the phone's console when one is listening (see bluetooth).
+class BleLog : public Print {
+ public:
+  size_t write(uint8_t c) override { return write(&c, 1); }
+  size_t write(const uint8_t *b, size_t n) override;
+} bleLog;
+class Console : public Print {
+ public:
+  size_t write(uint8_t c) override { return write(&c, 1); }
+  size_t write(const uint8_t *b, size_t n) override {
+    bleLog.write(b, n);
+    return Serial.write(b, n);
+  }
+} con;
+
 void onRx() { rxFlag = true; }
 
 // ---------- helpers ----------
 float batteryVolts() { return analogRead(PIN_VBAT) * AREF_VOLTAGE / 4095.0f * ADC_MULTIPLIER; }
 
-void beep(uint16_t freq, uint16_t ms) { tone(PIN_BUZZER, freq, ms); }
+void beep(uint16_t freq, uint16_t ms) {
+  if (settings.beeps) tone(PIN_BUZZER, freq, ms);
+}
 
 // Beep sequences play from loop(), so the radio keeps being serviced while they sound
 // (tone() itself doesn't block).
@@ -217,15 +250,24 @@ void handleBeeps() {
 // accepts it), so time is only trusted once a position fix has been seen.
 bool gpsTimeTrusted = false;
 
+// With the GPS switched off (or its time going stale) the clock runs on from the last GPS time.
 uint32_t gpsEpoch() {
+  static uint32_t lastT = 0, lastAt = 0;
   if (!gpsTimeTrusted) {
     if (!gps.location.isValid()) return 0;
     gpsTimeTrusted = true;
   }
-  if (!gps.date.isValid() || !gps.time.isValid() || gps.date.year() < 2024 || gps.date.year() > 2079) return 0;
-  return epochFromCivil(gps.date.year(), gps.date.month(), gps.date.day(), gps.time.hour(), gps.time.minute(),
-                        gps.time.second());
+  if (gps.date.isValid() && gps.time.isValid() && gps.time.age() < 3000 && gps.date.year() >= 2024 &&
+      gps.date.year() <= 2079) {
+    lastT = epochFromCivil(gps.date.year(), gps.date.month(), gps.date.day(), gps.time.hour(), gps.time.minute(),
+                           gps.time.second());
+    lastAt = millis();
+    return lastT;
+  }
+  return lastT ? lastT + (millis() - lastAt) / 1000 : 0;
 }
+
+void applyGps() { digitalWrite(PIN_GPS_STANDBY, settings.gps ? HIGH : LOW); }  // LOW = standby on L76K
 
 // ---------- labels ----------
 Label *findLabel(uint32_t id) {
@@ -244,7 +286,7 @@ const char *getLabel(uint32_t id) {
 Label *labelEntry(uint32_t id) {
   if (Label *l = findLabel(id)) return l;
   if (labelCount >= MAX_LABELS) {
-    Serial.println("# label table full");
+    con.println("# label table full");
     return nullptr;
   }
   Label *l = &labels[labelCount++];
@@ -354,6 +396,7 @@ int loadFile(const char *path, uint32_t magic, uint16_t version, void *data, siz
 
 const uint32_t MAGIC_SURVEY = 0x53525659;  // "SRVY"
 const uint32_t MAGIC_LABELS = 0x4C41424C;  // "LABL"
+const uint32_t MAGIC_SETTINGS = 0x53455447;  // "SETG"
 
 // Current format, or format 2 converted field by field.
 template <typename F>
@@ -383,7 +426,7 @@ int readSurvey(F &f) {
     m.nSamples = o.nSamples;
     memcpy(m.samples, o.samples, sizeof(m.samples));
   }
-  Serial.printf("# converted survey from format 2 (%d meters)\n", h.count);
+  con.printf("# converted survey from format 2 (%d meters)\n", h.count);
   return h.count;
 }
 
@@ -412,7 +455,7 @@ bool flushLog(LogFile &lf) {
   ok = ok && f.write(lf.buf, lf.len) == lf.len;
   ok = f.close() && ok;
   if (ok) lf.len = 0;
-  else Serial.printf("# %s append FAILED\n", lf.path);
+  else con.printf("# %s append FAILED\n", lf.path);
   return ok;
 }
 
@@ -505,7 +548,7 @@ snapring::Contents snapContents() {
 int loadSnapshot() {
   snapring::Contents c = snapContents();
   int n = ring.load(SURVEY_VERSION, c, [](uint32_t seq) {
-    Serial.printf("# snapshot %lu damaged, trying an older one\n", (unsigned long)seq);
+    con.printf("# snapshot %lu damaged, trying an older one\n", (unsigned long)seq);
   });
   historyLog.len = c.aLen;
   rawLog.len = c.bLen;
@@ -556,7 +599,7 @@ bool saveSurvey(bool flushLogs = false) {
   if (ringOk) ok = saveSnapshot();
   else if (qspiOk) ok = !driveToHost && saveSurveyQspi();
   else ok = saveFile(SURVEY_FILE, MAGIC_SURVEY, SURVEY_VERSION, meters, sizeof(Meter), meterCount);
-  Serial.printf("# survey saved (%d meters) %s\n", meterCount, ok ? "ok" : "FAILED");
+  con.printf("# survey saved (%d meters) %s\n", meterCount, ok ? "ok" : "FAILED");
   surveyDirty = false;
   lastSurveySave = millis();
   return ok;
@@ -564,15 +607,28 @@ bool saveSurvey(bool flushLogs = false) {
 
 void saveLabels() {
   bool ok = saveFile(LABEL_FILE, MAGIC_LABELS, FILE_VERSION_LABELS, labels, sizeof(Label), labelCount);
-  Serial.printf("# labels saved (%d) %s\n", labelCount, ok ? "ok" : "FAILED");
+  con.printf("# labels saved (%d) %s\n", labelCount, ok ? "ok" : "FAILED");
   labelsDirty = false;
+}
+
+void saveSettings() {
+  bool ok = saveFile(SETTINGS_FILE, MAGIC_SETTINGS, FILE_VERSION_SETTINGS, &settings, sizeof(settings), 1);
+  con.printf("# settings saved %s\n", ok ? "ok" : "FAILED");
+  settingsDirty = false;
+}
+
+// Defaults stay if there is no file (or one from another settings version).
+void loadSettings() {
+  Settings s;
+  if (loadFile(SETTINGS_FILE, MAGIC_SETTINGS, FILE_VERSION_SETTINGS, &s, sizeof(s), 1) == 1) settings = s;
+  if (settings.screenOff >= N_SCREEN_OFF) settings.screenOff = 2;
 }
 
 void fsInit() {
   fsOk = InternalFS.begin();
   if (fsOk && !InternalFS.exists(FS_MARKER)) {
     // First boot after flashing (e.g. over Meshtastic): wipe its settings to free the 28 KB area.
-    Serial.println("# formatting internal flash");
+    con.println("# formatting internal flash");
     InternalFS.format();
     fsOk = InternalFS.begin();
     LfsFile f(InternalFS);
@@ -581,7 +637,7 @@ void fsInit() {
       f.close();
     }
   }
-  if (!fsOk) Serial.println("# internal flash unavailable - labels will not be saved");
+  if (!fsOk) con.println("# internal flash unavailable - labels will not be saved");
 
   if (qspiOk && !fatfs.begin(&flash)) {
     // Only format a blank chip. A filesystem that fails to mount may still hold the survey and
@@ -589,18 +645,18 @@ void fsInit() {
     uint8_t sec[512];
     bool blank = flash.readSectors(0, sec, 1) && !(sec[510] == 0x55 && sec[511] == 0xAA);
     if (blank) {
-      Serial.println("# formatting QSPI flash");
+      con.println("# formatting QSPI flash");
       qspiOk = fat12::format(flash, DRIVE_LABEL, NRF_FICR->DEVICEID[0]) && fatfs.begin(&flash);
     } else {
-      Serial.println("# QSPI filesystem won't mount - not formatting it (send FORMAT to wipe)");
+      con.println("# QSPI filesystem won't mount - not formatting it (send FORMAT to wipe)");
       qspiOk = false;
     }
   }
-  if (!qspiOk) Serial.println("# QSPI flash unavailable - survey saved to internal flash (limited size)");
+  if (!qspiOk) con.println("# QSPI flash unavailable - survey saved to internal flash (limited size)");
 
   if (qspiOk) {
     ringOk = ringInit();
-    if (!ringOk) Serial.println("# state.bin unavailable - saving survey.bin instead (more flash wear)");
+    if (!ringOk) con.println("# state.bin unavailable - saving survey.bin instead (more flash wear)");
   }
   int loaded = ringOk ? loadSnapshot() : -1;
   if (loaded >= 0) meterCount = loaded;
@@ -635,7 +691,7 @@ void fsInit() {
     int n = atoi(labels[i].text);
     if (n > lastLabelNum) lastLabelNum = n;
   }
-  Serial.printf("# loaded %d meters, %d labels\n", meterCount, labelCount);
+  con.printf("# loaded %d meters, %d labels\n", meterCount, labelCount);
   if (legacy) {
     sortMeters();
     if (saveSurvey()) {
@@ -645,7 +701,7 @@ void fsInit() {
         flash.syncBlocks();
       }
       if (fsOk) InternalFS.remove(SURVEY_FILE);
-      Serial.println("# survey moved to the new save format");
+      con.println("# survey moved to the new save format");
     }
   }
 }
@@ -683,8 +739,9 @@ void handleUsbDrive() {
   bool host = TinyUSBDevice.mounted();
   if (host && !driveToHost && qspiOk) {
     if (labelsDirty) saveLabels();
+    if (settingsDirty) saveSettings();
     saveSurvey(true);  // also appends waiting log rows
-    if (!writeSurveyCsv()) Serial.println("# survey.csv FAILED");
+    if (!writeSurveyCsv()) con.println("# survey.csv FAILED");
     flash.syncBlocks();
     driveToHost = true;
   } else if (!host && driveToHost) {
@@ -700,7 +757,7 @@ void sortMeters() {
     while (j >= 0) {
       const Meter &a = meters[order[j]], &b = meters[k];
       bool swap;
-      if (sortByRssi) swap = a.bestRssi < b.bestRssi;
+      if (settings.sortByRssi) swap = a.bestRssi < b.bestRssi;
       else if (a.thisSession != b.thisSession) swap = b.thisSession;
       else if (a.thisSession) swap = a.lastSeen < b.lastSeen;
       else swap = a.utc < b.utc;
@@ -736,7 +793,7 @@ void radioInit() {
   // preamble length 8 -> 8-bit preamble detector. T1 only guarantees a 38-chip preamble,
   // and detector + 16-bit sync must fit inside it.
   if (st != RADIOLIB_ERR_NONE) {
-    Serial.printf("radio init failed %d\n", st);
+    con.printf("radio init failed %d\n", st);
     oled.clearBuffer();
     oled.drawStr(0, 10, "Radio init failed");
     oled.sendBuffer();
@@ -764,7 +821,7 @@ int evictSlot() {
     if (m.thisSession || getLabel(m.id)) continue;
     if (victim < 0 || m.utc < meters[victim].utc) victim = i;
   }
-  if (victim >= 0) Serial.printf("# table full, dropped %08lx\n", (unsigned long)meters[victim].id);
+  if (victim >= 0) con.printf("# table full, dropped %08lx\n", (unsigned long)meters[victim].id);
   return victim;
 }
 
@@ -884,18 +941,384 @@ void handlePacket() {
   sortMeters();
 }
 
+// ---------- bluetooth ----------
+// Off unless turned on in settings (the SoftDevice isn't even started until then). A phone running
+// the web page in web/ mirrors the screen, presses the buttons and uses the serial console, which
+// also downloads the CSV files. Every characteristic needs an encrypted link paired with the
+// passkey shown on the screen.
+// Notifications are only queued while the SoftDevice has room for them (TX_QUEUE), so the loop
+// never waits on the phone.
+
+// Screen mirror: notify [page 0-7][first column][pixels...], pixel bytes as in the U8g2 buffer
+// (one byte = 8 pixels down, lowest bit on top). Keys: write one byte per press, 'U' 'D' 'L' 'R'
+// 'P' (joystick press) 'B' (user button), | 0x80 = repeat from holding it down.
+BLEService screenSvc("5f6d0001-2a8b-4c1e-9d3f-7b1a0c4e8d21");
+BLECharacteristic screenChr("5f6d0002-2a8b-4c1e-9d3f-7b1a0c4e8d21");
+BLECharacteristic keysChr("5f6d0003-2a8b-4c1e-9d3f-7b1a0c4e8d21");
+// Console: the Nordic UART Service, so BLE serial terminal apps work too.
+BLEService consoleSvc(BLEUART_UUID_SERVICE);
+BLECharacteristic consoleTx(BLEUART_UUID_CHR_TXD);
+BLECharacteristic consoleRx(BLEUART_UUID_CHR_RXD);
+
+const uint32_t TX_QUEUE = 3;  // SoftDevice notification queue with BANDWIDTH_MAX
+
+// Byte queue with one writer and one reader (N a power of two).
+template <size_t N>
+struct ByteRing {
+  uint8_t buf[N];
+  volatile uint32_t head = 0, tail = 0;  // free running
+  uint32_t used() const { return head - tail; }
+  uint32_t space() const { return N - used(); }
+  bool put(uint8_t b) {
+    if (!space()) return false;
+    buf[head % N] = b;
+    asm volatile("" ::: "memory");  // byte stored before the reader sees it
+    head = head + 1;
+    return true;
+  }
+  void put(const uint8_t *b, size_t n) {
+    for (size_t i = 0; i < n; i++) put(b[i]);
+  }
+  int get() {
+    if (!used()) return -1;
+    uint8_t b = buf[tail % N];
+    asm volatile("" ::: "memory");
+    tail = tail + 1;
+    return b;
+  }
+  size_t peek(uint8_t *out, size_t n) const {
+    n = min((uint32_t)n, used());
+    for (size_t i = 0; i < n; i++) out[i] = buf[(tail + i) % N];
+    return n;
+  }
+  void drop(size_t n) { tail = tail + n; }
+  void clear() { tail = head; }
+};
+
+ByteRing<16> keyRing;       // BLE task -> loop
+ByteRing<256> cmdRing;      // BLE task -> loop
+ByteRing<4096> txRing;      // loop -> console notifications
+bool bleBegun = false;
+char bleName[12];
+volatile bool screenSub = false, consoleSub = false, screenResend = false;
+volatile uint32_t txDone = 0;  // notifications sent (BLE task)
+uint32_t txSent = 0;           // notifications queued (loop)
+bool bleWasLinked = false;
+bool forgetBonds = false;  // "Forget phones", waiting for the link to close
+uint32_t forgotAt = 0;     // ... shows "done" for a moment
+uint8_t mirrorSent[128 * 8];   // screen as the phone last got it
+char pairCode[7];
+volatile bool pairPending = false;  // passkey on screen until paired (or PAIR_SHOW_MS)
+volatile bool pairFailed = false;
+uint32_t pairSince = 0;
+bool pairShown = false;
+#define PAIR_SHOW_MS 60000
+
+bool bleLinked() { return bleBegun && Bluefruit.connected(); }
+
+// Downloads (d/h/r from the phone): "# file <name>", the rows, "# end". Other log output is held
+// back meanwhile so it can't land inside the file.
+struct Download {
+  char kind;             // 0 = none, 'd' survey, 'h' history, 'r' raw
+  int next;              // d: next meter
+  LogFile *log;          // h/r
+  uint32_t size, off;    // h/r: file length when the download started, bytes sent
+  uint32_t bufLen, bufOff;  // h/r: rows waiting in RAM at the start (copied to dlBuf)
+} dl = {};
+char dlBuf[sizeof(historyLog.buf)];
+
+size_t BleLog::write(const uint8_t *b, size_t n) {
+  if (consoleSub && !dl.kind && txRing.space() >= n) txRing.put(b, n);  // whole or not at all
+  return n;
+}
+
+void txText(const char *t) { txRing.put((const uint8_t *)t, strlen(t)); }
+
+void startDownload(char kind) {
+  dl = {};
+  dl.kind = kind;
+  if (kind == 'd') {
+    txText("# file survey.csv\n");
+    txText(SURVEY_HEADER);
+    txText("\n");
+    return;
+  }
+  dl.log = kind == 'h' ? &historyLog : &rawLog;
+  txText(kind == 'h' ? "# file history.csv\n" : "# file raw.csv\n");
+  File32 f = qspiOk ? fatfs.open(dl.log->path, O_RDONLY) : File32();
+  if (f) {
+    dl.size = f.fileSize();
+    f.close();
+  } else {
+    txText(dl.log->header);
+    txText("\n");
+  }
+  dl.bufLen = dl.log->len;
+  memcpy(dlBuf, dl.log->buf, dl.bufLen);
+}
+
+// Tops up txRing with the next part of the download.
+void pumpDownload() {
+  while (dl.kind && txRing.space() >= ROW_MAX + 16) {
+    if (dl.kind == 'd') {
+      if (dl.next < meterCount) {
+        char row[ROW_MAX];
+        const Meter &m = meters[dl.next++];
+        surveyRow(row, sizeof(row), m, getLabel(m.id));
+        txText(row);
+        txText("\n");
+        continue;
+      }
+    } else if (dl.off < dl.size) {
+      uint8_t chunk[512];
+      File32 f = fatfs.open(dl.log->path, O_RDONLY);
+      int n = f && f.seekSet(dl.off) ? f.read(chunk, min((uint32_t)sizeof(chunk), dl.size - dl.off)) : -1;
+      if (f) f.close();
+      if (n > 0) {
+        txRing.put(chunk, n);
+        dl.off += n;
+        continue;
+      }
+      txText("# read failed\n");
+    } else if (dl.bufOff < dl.bufLen) {
+      uint32_t n = min((uint32_t)512, dl.bufLen - dl.bufOff);
+      txRing.put((const uint8_t *)dlBuf + dl.bufOff, n);
+      dl.bufOff += n;
+      continue;
+    }
+    txText("# end\n");
+    dl.kind = 0;
+  }
+}
+
+// One notification, if the SoftDevice queue has room for it.
+bool bleSend(BLECharacteristic &chr, const uint8_t *d, uint16_t n) {
+  if (txSent - txDone >= TX_QUEUE || !chr.notify(d, n)) return false;
+  txSent++;
+  return true;
+}
+
+uint16_t blePayload() {
+  BLEConnection *c = Bluefruit.Connection(Bluefruit.connHandle());
+  return c ? min(c->getMtu() - 3, 244) : 20;
+}
+
+void drawScreen();
+
+// Sends the parts of the screen that changed since the phone last got them.
+void pushScreen() {
+  if (screenResend) {
+    screenResend = false;
+    drawScreen();
+    const uint8_t *buf = oled.getBufferPtr();
+    for (size_t i = 0; i < sizeof(mirrorSent); i++) mirrorSent[i] = ~buf[i];  // all different
+  }
+  const uint8_t *buf = oled.getBufferPtr();
+  int maxPx = blePayload() - 2;
+  for (int p = 0; p < 8; p++) {
+    const uint8_t *row = buf + p * 128;
+    uint8_t *sent = mirrorSent + p * 128;
+    int x = 0;
+    while (true) {
+      while (x < 128 && row[x] == sent[x]) x++;
+      if (x == 128) break;
+      int n = min(128 - x, maxPx);
+      while (n > 1 && row[x + n - 1] == sent[x + n - 1]) n--;
+      uint8_t pkt[246] = {(uint8_t)p, (uint8_t)x};
+      memcpy(pkt + 2, row + x, n);
+      if (!bleSend(screenChr, pkt, n + 2)) return;
+      memcpy(sent + x, row + x, n);
+      x += n;
+    }
+  }
+}
+
+void pushConsole() {
+  uint16_t max = blePayload();
+  while (txRing.used()) {
+    uint8_t pkt[244];
+    size_t n = txRing.peek(pkt, max);
+    if (!bleSend(consoleTx, pkt, n)) return;
+    txRing.drop(n);
+  }
+}
+
+// ---- callbacks (BLE task) ----
+void onBleEvent(ble_evt_t *e) {
+  if (e->header.evt_id == BLE_GATTS_EVT_HVN_TX_COMPLETE) txDone = txDone + e->evt.gatts_evt.params.hvn_tx_complete.count;
+}
+
+void onConnect(uint16_t conn) {
+  BLEConnection *c = Bluefruit.Connection(conn);
+  c->requestPHY();
+  c->requestDataLengthUpdate();
+  c->requestMtuExchange(247);  // a whole screen row per notification
+}
+
+void onDisconnect(uint16_t, uint8_t) {
+  screenSub = consoleSub = false;
+  pairPending = false;
+}
+
+void onCccd(uint16_t, BLECharacteristic *chr, uint16_t v) {
+  bool on = v & BLE_GATT_HVX_NOTIFICATION;
+  if (chr == &screenChr) {
+    screenSub = on;
+    if (on) screenResend = true;
+  } else {
+    consoleSub = on;
+  }
+}
+
+void onKeys(uint16_t, BLECharacteristic *, uint8_t *d, uint16_t n) { keyRing.put(d, n); }
+void onConsoleRx(uint16_t, BLECharacteristic *, uint8_t *d, uint16_t n) { cmdRing.put(d, n); }
+
+bool onPasskey(uint16_t, uint8_t const passkey[6], bool) {
+  memcpy(pairCode, passkey, 6);
+  pairCode[6] = 0;
+  pairPending = true;
+  return true;
+}
+
+void onPairDone(uint16_t, uint8_t status) {
+  pairPending = false;
+  if (status != BLE_GAP_SEC_STATUS_SUCCESS) pairFailed = true;
+}
+
+// ---- start / stop ----
+void bleStart() {
+  if (!bleBegun) {
+    Bluefruit.autoConnLed(false);  // its LED pin isn't wired to anything we use
+    Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
+    if (!Bluefruit.begin()) {
+      con.println("# bluetooth failed to start");
+      return;
+    }
+    bleBegun = true;
+    Bluefruit.setName(bleName);
+    Bluefruit.setEventCallback(onBleEvent);
+    Bluefruit.Security.setIOCaps(true, false, false);  // display only: the phone asks for the code
+    Bluefruit.Security.setMITM(true);
+    Bluefruit.Security.setPairPasskeyCallback(onPasskey);
+    Bluefruit.Security.setPairCompleteCallback(onPairDone);
+    Bluefruit.Periph.setConnectCallback(onConnect);
+    Bluefruit.Periph.setDisconnectCallback(onDisconnect);
+    Bluefruit.Periph.setConnInterval(6, 24);  // 7.5-30 ms
+
+    screenSvc.begin();
+    screenChr.setProperties(CHR_PROPS_NOTIFY);
+    screenChr.setPermission(SECMODE_ENC_WITH_MITM, SECMODE_NO_ACCESS);
+    screenChr.setMaxLen(246);
+    screenChr.setCccdWriteCallback(onCccd, false);
+    screenChr.begin();
+    keysChr.setProperties(CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP);
+    keysChr.setPermission(SECMODE_NO_ACCESS, SECMODE_ENC_WITH_MITM);
+    keysChr.setMaxLen(16);
+    keysChr.setWriteCallback(onKeys, false);
+    keysChr.begin();
+
+    consoleSvc.begin();
+    consoleTx.setProperties(CHR_PROPS_NOTIFY);
+    consoleTx.setPermission(SECMODE_ENC_WITH_MITM, SECMODE_NO_ACCESS);
+    consoleTx.setMaxLen(244);
+    consoleTx.setCccdWriteCallback(onCccd, false);
+    consoleTx.begin();
+    consoleRx.setProperties(CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP);
+    consoleRx.setPermission(SECMODE_NO_ACCESS, SECMODE_ENC_WITH_MITM);
+    consoleRx.setMaxLen(244);
+    consoleRx.setWriteCallback(onConsoleRx, false);
+    consoleRx.begin();
+
+    Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
+    Bluefruit.Advertising.addService(screenSvc);
+    Bluefruit.ScanResponse.addName();
+    Bluefruit.Advertising.setInterval(32, 1600);  // 20 ms for the first 30 s, then 1 s
+    Bluefruit.Advertising.setFastTimeout(30);
+  }
+  Bluefruit.Advertising.restartOnDisconnect(true);
+  Bluefruit.Advertising.start(0);
+}
+
+void bleStop() {
+  if (!bleBegun) return;
+  Bluefruit.Advertising.restartOnDisconnect(false);
+  Bluefruit.Advertising.stop();
+  if (BLEConnection *c = Bluefruit.Connection(Bluefruit.connHandle())) c->disconnect();
+}
+
+void runCommand(char *c, bool fromBle);
+
+void bleLoop() {
+  if (!bleBegun) return;
+  if (pairFailed) {
+    pairFailed = false;
+    beep(400, 300);
+  }
+  if (pairPending && !pairShown) {  // the code has to be readable on the device itself
+    pairShown = true;
+    pairSince = millis();
+    wakeScreen();
+    drawScreen();
+  }
+  if (pairShown && (!pairPending || millis() - pairSince > PAIR_SHOW_MS)) {
+    pairShown = pairPending = false;
+    drawScreen();
+  }
+  if (!Bluefruit.connected()) {
+    if (bleWasLinked) {  // queued notifications were dropped with the link
+      txSent = txDone;
+      dl.kind = 0;
+      txRing.clear();
+      cmdRing.clear();
+      keyRing.clear();
+    }
+    bleWasLinked = false;
+    if (forgetBonds) {
+      forgetBonds = false;
+      Bluefruit.Periph.clearBonds();
+      if (settings.ble) bleStart();
+      forgotAt = millis();
+      drawScreen();
+    }
+    return;
+  }
+  bleWasLinked = true;
+
+  static char line[48];
+  static size_t len = 0;
+  int ch;
+  while ((ch = cmdRing.get()) >= 0) {
+    if (ch == '\r' || ch == '\n') {
+      line[len] = 0;
+      if (len) runCommand(line, true);
+      len = 0;
+    } else if (len < sizeof(line) - 1) {
+      line[len++] = ch;
+    }
+  }
+  if (!consoleSub) {
+    dl.kind = 0;
+    txRing.clear();
+  }
+  pumpDownload();
+  if (screenSub) pushScreen();
+  if (consoleSub) pushConsole();
+}
+
 // ---------- UI ----------
 void drawList() {
   char line[32];
   // frame counters are on the diagnostics screen
-  snprintf(line, sizeof(line), "N%d  S%lu  %.2fV%s", meterCount, (unsigned long)gps.satellites.value(), battV,
-           battLow ? " LOW" : "");
+  char sats[8] = "S-";  // GPS off
+  if (settings.gps) snprintf(sats, sizeof(sats), "S%lu", (unsigned long)gps.satellites.value());
+  snprintf(line, sizeof(line), "N%d  %s  %.2fV%s%s", meterCount, sats, battV, battLow ? " LOW" : "",
+           bleLinked() ? " BT" : "");
   oled.drawStr(0, 7, line);
   oled.drawHLine(0, 9, 128);
 
   if (meterCount == 0) {
     oled.drawStr(0, 24, "Listening T1 868.95...");
-    oled.drawStr(0, 34, sortByRssi ? "sort: best RSSI" : "sort: last seen");
+    oled.drawStr(0, 34, settings.sortByRssi ? "sort: best RSSI" : "sort: last seen");
     if (!fsOk) oled.drawStr(0, 44, "flash error: no labels");
     if (!qspiOk) oled.drawStr(0, 54, "QSPI error: small survey");
     return;
@@ -998,8 +1421,9 @@ void drawDiag() {
   oled.drawHLine(0, 9, 128);
   snprintf(line, sizeof(line), "ok %lu  err %lu", (unsigned long)okCount, (unsigned long)errCount);
   oled.drawStr(0, 18, line);
-  snprintf(line, sizeof(line), "GPS %lu sats, %s", (unsigned long)gps.satellites.value(),
-           gps.location.isValid() ? (gpsTimeTrusted ? "fix" : "fix, no time") : "no fix");
+  if (!settings.gps) snprintf(line, sizeof(line), "GPS off%s", gpsTimeTrusted ? ", clock running" : "");
+  else snprintf(line, sizeof(line), "GPS %lu sats, %s", (unsigned long)gps.satellites.value(),
+                gps.location.isValid() ? (gpsTimeTrusted ? "fix" : "fix, no time") : "no fix");
   oled.drawStr(0, 27, line);
   snprintf(line, sizeof(line), "batt %.2fV%s%s", battV, battLow ? " LOW" : "", driveToHost ? " PC drive" : "");
   oled.drawStr(0, 36, line);
@@ -1014,13 +1438,58 @@ void drawDiag() {
   oled.drawStr(0, 63, line);
 }
 
+enum { SET_BT, SET_GPS, SET_SCREEN, SET_BEEPS, SET_SORT, SET_FORGET, N_SETTINGS };
+bool settingsOpen = false;
+int setSel = 0;
+
+void drawSettings() {
+  char line[32];
+  snprintf(line, sizeof(line), "Settings  %s", bleName);
+  oled.drawStr(0, 7, line);
+  oled.drawHLine(0, 9, 128);
+  for (int i = 0; i < N_SETTINGS; i++) {
+    const char *name = "", *val = "";
+    switch (i) {
+      case SET_BT: name = "Bluetooth"; val = !settings.ble ? "off" : bleLinked() ? "linked" : "on"; break;
+      case SET_GPS: name = "GPS"; val = settings.gps ? "on" : "off"; break;
+      case SET_SCREEN: name = "Screen off"; val = SCREEN_OFF_NAMES[settings.screenOff]; break;
+      case SET_BEEPS: name = "Beeps"; val = settings.beeps ? "on" : "off"; break;
+      case SET_SORT: name = "Sort"; val = settings.sortByRssi ? "best RSSI" : "last seen"; break;
+      case SET_FORGET: name = "Forget phones"; val = forgotAt && millis() - forgotAt < 3000 ? "done" : "<>"; break;
+    }
+    snprintf(line, sizeof(line), "%-14s%10s", name, val);
+    int y = 18 + i * 9;
+    if (i == setSel) {
+      oled.drawBox(0, y - 7, 128, 9);
+      oled.setDrawColor(0);
+      oled.drawStr(1, y, line);
+      oled.setDrawColor(1);
+    } else {
+      oled.drawStr(1, y, line);
+    }
+  }
+}
+
+void drawPairing() {
+  oled.drawStr(0, 7, "Bluetooth pairing");
+  oled.drawHLine(0, 9, 128);
+  oled.drawStr(0, 20, "Enter this code on");
+  oled.drawStr(0, 29, "the phone:");
+  oled.setFont(u8g2_font_10x20_tn);
+  oled.drawStr(34, 54, pairCode);
+  oled.setFont(u8g2_font_5x8_tf);
+}
+
+// Also drawn with the screen off while the phone is mirroring it.
 void drawScreen() {
-  if (!screenOn) return;
+  if (!screenOn && !screenSub) return;
   oled.clearBuffer();
-  if (diag) drawDiag();
+  if (pairShown) drawPairing();
+  else if (settingsOpen) drawSettings();
+  else if (diag) drawDiag();
   else if (detail && meterCount > 0) drawDetail();
   else drawList();
-  oled.sendBuffer();
+  if (screenOn) oled.sendBuffer();
 }
 
 // ---------- buttons ----------
@@ -1057,32 +1526,98 @@ bool pressed(Btn &b) {
 // The initial press, not a repeat from holding the button.
 bool firstFire(const Btn &b) { return b.lastFire == b.changed; }
 
+void settingsChanged() {
+  settingsDirty = true;
+  lastSettingsEdit = millis();
+}
+
+void changeSetting(int i, int dir) {
+  switch (i) {
+    case SET_BT:
+      settings.ble = !settings.ble;
+      if (settings.ble) bleStart();
+      else bleStop();
+      break;
+    case SET_GPS:
+      settings.gps = !settings.gps;
+      applyGps();
+      break;
+    case SET_SCREEN:
+      settings.screenOff = constrain(settings.screenOff + dir, 0, N_SCREEN_OFF - 1);
+      break;
+    case SET_BEEPS: settings.beeps = !settings.beeps; break;
+    case SET_SORT:
+      settings.sortByRssi = !settings.sortByRssi;
+      sortMeters();
+      break;
+    case SET_FORGET:
+      // Cleared by bleLoop once the link is down: a disconnect still writes to the phone's bond.
+      if (!bleBegun) return;
+      bleStop();
+      forgetBonds = true;
+      return;
+  }
+  settingsChanged();
+}
+
+// A key pressed on the phone page: 'U' 'D' 'L' 'R' 'P' 'B', | 0x80 = repeat.
+// It doesn't wake the screen or restart its timeout: the phone shows its own copy.
+bool remoteKey(bool &up, bool &down, bool &l, bool &r, bool &press, bool &user, bool &lrOnce) {
+  int k = keyRing.get();
+  if (k < 0) return false;
+  bool rep = k & 0x80;
+  switch (k & 0x7f) {
+    case 'U': up = true; break;
+    case 'D': down = true; break;
+    case 'L': l = true; break;
+    case 'R': r = true; break;
+    case 'P': press = !rep; break;
+    case 'B': user = !rep; break;
+    default: return false;
+  }
+  lrOnce = (l || r) && !rep;
+  return true;
+}
+
 void handleButtons() {
   bool up = pressed(bUp), down = pressed(bDown), l = pressed(bLeft), r = pressed(bRight), press = pressed(bPress),
        user = pressed(bUser);
-  if (!(up || down || l || r || press || user)) return;
-  lastInput = millis();
-  if (!screenOn) {  // the press that wakes the screen does nothing else
-    setScreen(true);
-    drawScreen();
+  bool lrOnce = (l && firstFire(bLeft)) || (r && firstFire(bRight));  // holding mustn't flip screens
+  if (up || down || l || r || press || user) {
+    lastInput = millis();
+    if (!screenOn || pairShown) {  // the press that wakes the screen (or hides the code) does nothing else
+      setScreen(true);
+      pairShown = pairPending = false;
+      drawScreen();
+      return;
+    }
+  } else if (!remoteKey(up, down, l, r, press, user, lrOnce)) {
     return;
   }
-  bool lrOnce = (l && firstFire(bLeft)) || (r && firstFire(bRight));  // holding mustn't flip screens
-  if (diag) {
+  bool lOnce = l && lrOnce, rOnce = r && lrOnce;
+  if (settingsOpen) {
+    if (up && setSel > 0) setSel--;
+    if (down && setSel < N_SETTINGS - 1) setSel++;
+    if (lrOnce) changeSetting(setSel, r ? 1 : -1);
+    if (press) settingsOpen = false;
+  } else if (diag) {
     if (lrOnce || press) diag = false;
   } else {
     if (up && sel > 0) selId = meters[order[--sel]].id;
     if (down && sel < meterCount - 1) selId = meters[order[++sel]].id;
     if (detail && meterCount > 0) {
       if (l || r) stepLabel(meters[order[sel]].id, r ? 1 : -1);
-    } else if (lrOnce) {
+    } else if (lOnce) {
+      settingsOpen = true;
+    } else if (rOnce) {
       diag = true;
     }
     if (press) detail = !detail;
   }
   if (user) {
-    sortByRssi = !sortByRssi;
+    settings.sortByRssi = !settings.sortByRssi;
     sortMeters();
+    settingsChanged();
   }
   drawScreen();
 }
@@ -1091,8 +1626,11 @@ void handleButtons() {
 char cmd[48];
 size_t cmdLen = 0;
 
-void runCommand(char *c) {
-  if (!strcmp(c, "d")) {
+void runCommand(char *c, bool fromBle = false) {
+  // Dumps asked for by the phone stream a chunk at a time; on serial they print all at once.
+  if (fromBle && (!strcmp(c, "d") || !strcmp(c, "h") || !strcmp(c, "r"))) {
+    startDownload(c[0]);
+  } else if (!strcmp(c, "d")) {
     Serial.println("# dump");
     printCsvHeader(Serial);
     for (int i = 0; i < meterCount; i++) printMeterCsv(Serial, meters[order[i]]);
@@ -1104,42 +1642,45 @@ void runCommand(char *c) {
     okCount = errCount = 0;
     surveyDirty = true;
     lastSurveySave = 0;
-    Serial.println("# survey cleared (labels kept)");
+    con.println("# survey cleared (labels kept)");
   } else if (c[0] == 'l' && (c[1] == ' ' || c[1] == 0)) {
     // l <id> [label]   - set or remove a label
     char *idStr = strtok(c + 1, " ");
     char *text = strtok(nullptr, "");
     if (!idStr) {
-      Serial.println("# usage: l <id> [label]");
+      con.println("# usage: l <id> [label]");
       return;
     }
     uint32_t id = strtoul(idStr, nullptr, 16);
     setLabel(id, text);
-    Serial.printf("# %08lx -> %s\n", (unsigned long)id, text ? text : "(removed)");
+    con.printf("# %08lx -> %s\n", (unsigned long)id, text ? text : "(removed)");
     sortMeters();
   } else if (!strcmp(c, "L")) {
-    Serial.println("# labels");
+    con.println("# labels");
     for (int i = 0; i < labelCount; i++)
-      Serial.printf("%08lx,%s%s\n", (unsigned long)labels[i].id, labels[i].text, hasKey(labels[i]) ? ",key" : "");
-    Serial.println("# end");
+      con.printf("%08lx,%s%s\n", (unsigned long)labels[i].id, labels[i].text, hasKey(labels[i]) ? ",key" : "");
+    con.println("# end");
   } else if (!strcmp(c, "s")) {
-    Serial.println("# status");
-    Serial.printf("build %s %s\n", __DATE__, __TIME__);
-    Serial.printf("qspi %s, jedec %06lx, %lu KB\n", qspiOk ? "ok" : "FAILED", (unsigned long)chipJedecId(),
+    con.println("# status");
+    con.printf("build %s %s\n", __DATE__, __TIME__);
+    con.printf("qspi %s, jedec %06lx, %lu KB\n", qspiOk ? "ok" : "FAILED", (unsigned long)chipJedecId(),
                   (unsigned long)(flash.size() / 1024));
-    Serial.printf("ring %s: %lu blocks, snapshot %lu, next block %lu\n", ringOk ? "ok" : "off", (unsigned long)ring.blocks,
+    con.printf("ring %s: %lu blocks, snapshot %lu, next block %lu\n", ringOk ? "ok" : "off", (unsigned long)ring.blocks,
                   (unsigned long)ring.seq, (unsigned long)ring.next);
-    Serial.printf("internal flash %s, meters %d, labels %d, log rows waiting %u+%u bytes\n", fsOk ? "ok" : "FAILED",
+    con.printf("internal flash %s, meters %d, labels %d, log rows waiting %u+%u bytes\n", fsOk ? "ok" : "FAILED",
                   meterCount, labelCount, (unsigned)historyLog.len, (unsigned)rawLog.len);
-    Serial.printf("usb mounted %d, drive %s\n", TinyUSBDevice.mounted(), driveToHost ? "with computer" : "held");
-    Serial.printf("battery %.2f V%s, frames ok %lu err %lu\n", battV, battLow ? " LOW" : "", (unsigned long)okCount,
+    con.printf("usb mounted %d, drive %s\n", TinyUSBDevice.mounted(), driveToHost ? "with computer" : "held");
+    con.printf("battery %.2f V%s, frames ok %lu err %lu\n", battV, battLow ? " LOW" : "", (unsigned long)okCount,
                   (unsigned long)errCount);
-    Serial.printf("gps chars %lu, sentences ok %lu bad %lu, sats %lu, fix %s, time %s\n",
+    con.printf("gps chars %lu, sentences ok %lu bad %lu, sats %lu, fix %s, time %s\n",
                   (unsigned long)gps.charsProcessed(), (unsigned long)gps.passedChecksum(),
                   (unsigned long)gps.failedChecksum(), (unsigned long)gps.satellites.value(),
                   gps.location.isValid() ? "yes" : "no", gpsTimeTrusted ? "trusted" : "not yet");
-    Serial.printf("gps fix age %lu ms, hdop %.1f\n", (unsigned long)gps.location.age(), gps.hdop.hdop());
-    Serial.println("# end");
+    con.printf("gps fix age %lu ms, hdop %.1f\n", (unsigned long)gps.location.age(), gps.hdop.hdop());
+    con.printf("bluetooth %s %s, gps %s, screen off %s, beeps %s\n", bleName,
+               !settings.ble ? "off" : bleLinked() ? "linked" : "advertising", settings.gps ? "on" : "off",
+               SCREEN_OFF_NAMES[settings.screenOff], settings.beeps ? "on" : "off");
+    con.println("# end");
   } else if (!strcmp(c, "h")) {
     printLog(historyLog);
     Serial.println("# end");
@@ -1148,7 +1689,7 @@ void runCommand(char *c) {
     Serial.println("# end");
   } else if (!strcmp(c, "HCLEAR")) {
     if (driveToHost) {
-      Serial.println("# unplug the USB drive first (or eject it and use a charger)");
+      con.println("# unplug the USB drive first (or eject it and use a charger)");
       return;
     }
     historyLog.len = rawLog.len = 0;
@@ -1162,13 +1703,13 @@ void runCommand(char *c) {
       meters[i].rawThisSession = false;
     }
     surveyDirty = true;
-    Serial.println("# history and raw logs deleted");
+    con.println("# history and raw logs deleted");
   } else if (!strcmp(c, "FORMAT")) {
     driveToHost = false;
     delay(200);  // let any USB read in progress finish before erasing
     if (qspiOk) fat12::format(flash, DRIVE_LABEL, NRF_FICR->DEVICEID[0]);
     InternalFS.format();
-    Serial.println("# flash formatted, rebooting");
+    con.println("# flash formatted, rebooting");
     delay(100);
     NVIC_SystemReset();
   } else if (c[0] == 'k' && (c[1] == ' ' || c[1] == 0)) {
@@ -1176,7 +1717,7 @@ void runCommand(char *c) {
     char *idStr = strtok(c + 1, " ");
     char *hexKey = strtok(nullptr, " ");
     if (!idStr) {
-      Serial.println("# usage: k <id> [32 hex digits]");
+      con.println("# usage: k <id> [32 hex digits]");
       return;
     }
     uint32_t id = strtoul(idStr, nullptr, 16);
@@ -1185,7 +1726,7 @@ void runCommand(char *c) {
       bool ok = strlen(hexKey) == 32;
       for (int i = 0; ok && i < 32; i++) ok = isxdigit((unsigned char)hexKey[i]);
       if (!ok) {
-        Serial.println("# key must be exactly 32 hex digits - nothing changed");
+        con.println("# key must be exactly 32 hex digits - nothing changed");
         return;
       }
       for (int i = 0; i < 16; i++) {
@@ -1200,9 +1741,9 @@ void runCommand(char *c) {
       labelsDirty = true;
       lastLabelEdit = millis();
     }
-    Serial.printf("# key for %08lx: %s\n", (unsigned long)id, hexKey ? (l ? "set" : "NOT set") : "cleared");
+    con.printf("# key for %08lx: %s\n", (unsigned long)id, hexKey ? (l ? "set" : "NOT set") : "cleared");
   } else if (*c) {
-    Serial.println("# commands: s=status  d=dump  c=clear survey  l <id> [label]  L=list labels  k <id> [hexkey]  h=history"
+    con.println("# commands: s=status  d=dump  c=clear survey  l <id> [label]  L=list labels  k <id> [hexkey]  h=history"
                    "  r=raw telegrams  HCLEAR=delete history+raw  FORMAT=erase all");
   }
 }
@@ -1232,7 +1773,7 @@ void setup() {
   while (!Serial && millis() - t0 < 2000) delay(10);
 
   pinMode(PIN_GPS_STANDBY, OUTPUT);
-  digitalWrite(PIN_GPS_STANDBY, HIGH);  // HIGH = awake on L76K
+  digitalWrite(PIN_GPS_STANDBY, HIGH);  // awake until the settings are loaded
   Serial1.begin(GPS_BAUDRATE);
 
   for (auto *b : allBtns) pinMode(b->pin, INPUT_PULLUP);
@@ -1252,7 +1793,10 @@ void setup() {
   oled.sendBuffer();
 
   fsInit();
+  loadSettings();
+  applyGps();
   sortMeters();
+  snprintf(bleName, sizeof(bleName), "WMBUS-%04lX", (unsigned long)(NRF_FICR->DEVICEID[0] & 0xFFFF));
   // Storage status for a moment, so problems show without a serial terminal.
   char line[32];
   oled.drawStr(0, 22, "built " __DATE__);
@@ -1265,9 +1809,11 @@ void setup() {
   oled.sendBuffer();
   delay(2000);
   radioInit();
+  // After fsInit: the snapshot ring seeds itself from the RNG, which the SoftDevice takes over.
+  if (settings.ble) bleStart();
   beep(2000, 60);
   lastInput = millis();
-  Serial.println("# wM-Bus T1 survey ready. Send 'help' for commands");
+  con.println("# wM-Bus T1 survey ready. Send 'help' for commands");
   printCsvHeader(Serial);
 }
 
@@ -1281,10 +1827,12 @@ void loop() {
 
   handleButtons();
   handleSerial();
+  bleLoop();
   handleBeeps();
 
   uint32_t now = millis();
   if (labelsDirty && now - lastLabelEdit > LABEL_SAVE_MS) saveLabels();
+  if (settingsDirty && now - lastSettingsEdit > LABEL_SAVE_MS) saveSettings();
   static uint32_t lastLogCheck = 0;
   if (now - lastLogCheck > 1000) {
     lastLogCheck = now;
@@ -1294,7 +1842,8 @@ void loop() {
   if (surveyDirty && (ringOk || !driveToHost) && now - lastSurveySave > (ringOk ? SURVEY_SAVE_MS : FALLBACK_SAVE_MS))
     saveSurvey();
 
-  if (screenOn && SCREEN_OFF_MS && now - lastInput > SCREEN_OFF_MS) setScreen(false);
+  uint32_t screenOffMs = SCREEN_OFF_CHOICES[settings.screenOff];
+  if (screenOn && screenOffMs && !pairShown && now - lastInput > screenOffMs) setScreen(false);
   static uint32_t lastDraw = 0;
   if (now - lastDraw > 500) {
     lastDraw = now;

@@ -15,13 +15,34 @@ Back to Meshtastic any time via https://flasher.meshtastic.org
 - Joystick up/down: select meter
 - Joystick press: list / detail view
 - Joystick left/right (detail view): set house number. Hold to repeat. An unlabelled meter starts next to the last number you used. Stepping to 0 removes the label.
-- Joystick left/right (list view): diagnostics screen (any of left/right/press goes back)
+- Joystick left (list view): settings screen (see below; press goes back)
+- Joystick right (list view): diagnostics screen (any of left/right/press goes back)
 - User button: sort by best RSSI / last seen
-- Screen turns off after 2 minutes without a button press; the next press only wakes it. A new leak or low battery wakes it too. (`SCREEN_OFF_MS` in main.cpp, 0 = never)
+- Screen turns off after 2 minutes without a button press (changeable in settings); the next press only wakes it. A new leak or low battery wakes it too.
 - Beeps: three short = meter newly reporting a leak; two low = battery below 3.5 V
 
+## Settings
+Up/down picks a setting, left/right changes it, press goes back. Saved to the internal flash a few seconds after the last change.
+- Bluetooth (default off): lets a phone connect, see below. `linked` = a phone is connected
+- GPS: off puts the GPS module in standby, which saves power (e.g. when leaving the tracker by your own meter). No positions are recorded then. Times keep running from the last GPS time, if there was one since power-on
+- Screen off: 30 s, 1 min, 2 min, 5 min or never
+- Beeps: leak, low battery and start-up beeps
+- Sort: same as the user button
+- Forget phones: removes every paired phone (Bluetooth must be on). Pair again from the page afterwards
+
+The top line shows the Bluetooth name (`WMBUS-` + 4 characters unique to the tracker).
+
+## Bluetooth (phone page)
+`web/index.html` is a page for Chrome on Android (or Chrome/Edge on a computer; iPhone Safari has no Web Bluetooth). It shows the tracker's screen live, has the joystick and user button, a log of what the tracker prints on serial with a box for serial commands, and downloads `survey.csv`, `history.csv` and `raw.csv` without a cable. The tracker keeps listening while it does.
+
+1. Settings → Bluetooth → on
+2. Open the page (it has to come from an `https://` address, e.g. GitHub Pages, for the browser to allow Bluetooth), press Connect and pick `WMBUS-xxxx`
+3. The first time, the tracker shows a 6-digit code and the phone asks for it. After that the phone reconnects without it
+
+With a phone watching, the screen is kept up to date for it even while the tracker's own screen is off, and buttons pressed on the page don't turn the tracker's screen on. The link needs the pairing code, so nobody else nearby can connect. The console uses the standard Nordic UART service, so BLE serial terminal apps (e.g. nRF Toolbox, Serial Bluetooth Terminal) work too once paired.
+
 ## List view
-Top line: `N48  S9  3.92V` = meters in the table, GPS satellites in view, battery (`LOW` below 3.5 V).
+Top line: `N48  S9  3.92V` = meters in the table, GPS satellites in view (`S-` = GPS switched off), battery (`LOW` below 3.5 V), `BT` while a phone is connected.
 
 `#12     L   12.345  -71*`
 - Label (or meter ID if unlabelled)
@@ -57,7 +78,8 @@ While a computer has the drive the tracker keeps receiving and saving the survey
 
 ## Serial (115200, line-based)
     pio device monitor
-- `s` status: build date, QSPI flash, save ring, USB drive, battery, frame counters, GPS reception (sentences ok/bad, fix age, HDOP)
+The same commands work from the command box on the phone page.
+- `s` status: build date, QSPI flash, save ring, USB drive, battery, frame counters, GPS reception (sentences ok/bad, fix age, HDOP), Bluetooth and settings
 - `d` dump table as CSV (label, mode T1/C1a/C1b, manufacturer, type, reading, alarms, UTC, lat, lon, spread)
 - `c` clear survey (labels and history kept)
 - `h` print history.csv, `r` print raw.csv (not while a computer has the drive: open the files there)
@@ -82,5 +104,6 @@ GitHub Actions runs both, builds the firmware and compiles the ESPHome configs o
 - "QSPI error: small survey" on screen → the QSPI flash didn't start; the survey falls back to internal flash, which only has room for roughly 100 meters
 - No `WMBUS` drive → check it's a data cable; the drive only appears a few seconds after boot. The boot screen shows the build date and `flash ok` / `FLASH FAIL`; `s` on serial gives the details. With a flash failure Windows shows a removable disk with no media
 - Nothing at all → check `radio init failed` on serial
+- Page can't find the tracker → Bluetooth on in settings? Only one phone can be connected at a time. After "Forget phones" (or a `FORMAT`), also remove `WMBUS-xxxx` from the phone's Bluetooth settings before pairing again
 - "no position yet" in detail view → that meter hasn't been heard since the GPS got a fix (the `S` number on the list view is satellites in view, and the diagnostics screen says whether there's a fix; first fix outdoors can take up to 15 min)
 - "flash error: no saving" → send `FORMAT`
