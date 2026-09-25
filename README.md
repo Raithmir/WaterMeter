@@ -68,12 +68,12 @@ Hold the board close to your water meter, or to the cover over it. Any USB power
 - **Your phone**, with a USB-C to USB-C cable. Most Android phones with USB-C, and iPhone 15 and later, can power the board. Some Android phones need USB power output or OTG switched on first.
 - **A LiPo battery.** Both boards have a battery connector and charge the battery over USB.
 
-Then see what the board found. The survey lists **Diehl meters it has heard at least twice with a good signal**. It keeps the list until the board loses power.
+Then see what the board found. The survey lists **Diehl meters it has heard at least twice at -85 dBm or stronger** (see [Reading the logs](#reading-the-logs) for what that means). It keeps the list until the board loses power.
 
 | Where | How |
 |---|---|
 | **Heltec screen** | The large text is the strongest meter heard in the last few seconds. Short press **PRG** to step through the found meters; long press to clear the list. |
-| **XIAO light** | The yellow light blinks each time it hears a Diehl meter with a good signal, so it blinks more often the closer you are to one. |
+| **XIAO light** | The yellow light blinks each time it hears a Diehl meter at -85 dBm or stronger, so it blinks more often the closer you are to one. |
 | **Web page** | On the same Wi-Fi, open `http://water-meter-survey.local` (Heltec) or `http://water-meter-survey-xiao.local` (XIAO). It shows the found meters and live logs. If that address doesn't open, which happens on some phones and computers, look up the board's IP address in your router's list of connected devices and open that instead. |
 | **Logs** | Plug the board into a computer, open [web.esphome.io](https://web.esphome.io), choose **Connect**, then **Logs**. (Unplugging the power to do this clears the list, unless a LiPo battery keeps the board running.) |
 | **Home Assistant** | If you have it, the board appears under Settings → Devices & services. Add it to see the `Survey Found Meters` sensor. |
@@ -85,19 +85,20 @@ With the XIAO, keep the board powered after visiting your meter and walk back in
 When the survey finds a new meter, it logs:
 
 ```
-[I][survey:...]: NEW meter 0x2124589C  -58dBm  b8=..  (total 1)
+[I][survey:...]: NEW meter 0x2124589C  -71dBm  b8=..  (total 1)
 ```
 
 Every 30 seconds it also logs the whole list, strongest signal first:
 
 ```
 [I][survey:...]: Found 3 meter(s), strongest first:
-[I][survey:...]:   0x2124589C  -52dBm  b8=..
-[I][survey:...]:   0x21245A11  -63dBm  b8=..
+[I][survey:...]:   0x2124589C  -70dBm  b8=..
+[I][survey:...]:   0x21245A11  -78dBm  b8=..
+[I][survey:...]:   0x2124601F  -84dBm  b8=..
 ```
 
 - `0x2124589C` is the meter ID.
-- `-52dBm` is the signal strength (RSSI). Numbers closer to 0 are stronger: -50 is stronger than -70.
+- `-70dBm` is the signal strength (RSSI). Numbers closer to 0 are stronger: -70 is stronger than -80. Meter signals are weak: most meters sit in a pit under a lid, and the lid and ground block a lot of the signal. Around -70 while holding the board right over the meter is normal.
 - `FRAME` lines show each broadcast from a Diehl meter as it arrives, with its raw data after `HEX:`. You only need them to check your meter's serial number (below).
 
 ### Make sure it's yours
@@ -110,7 +111,7 @@ Your meter is usually the one whose signal becomes clearly the strongest when yo
 
 ## Step 2: Set up the gateway
 
-The gateway listens only for your meter and sends its readings to Home Assistant. It's designed for Home Assistant: without it, the Heltec's screen still shows the current reading, but nothing records it.
+The gateway listens only for your meter and sends its readings to Home Assistant. It uses every broadcast it can decode, however weak, so it can live indoors. A spot at the front of the house nearest the meter, such as a windowsill, works best. Once it's running, the **Water Meter RSSI** sensor shows how well it hears the meter. It's designed for Home Assistant: without it, the Heltec's screen still shows the current reading, but nothing records it.
 
 Because the gateway needs your meter ID built in, there's no ready-made download. You build it yourself with ESPHome, which turns a text config file into firmware. The easiest way is the **ESPHome Device Builder** add-on in Home Assistant.
 
@@ -258,7 +259,7 @@ Pin sources: Seeed's [one_channel_hub BSP](https://github.com/Seeed-Studio/one_c
 
 ### Survey details
 
-- The found list holds Diehl meters (manufacturer code `0x4C30`) heard twice at -70 dBm or stronger. `b8` is byte 8 of the frame (the version field).
+- The found list holds Diehl meters (manufacturer code `0x4C30`) heard twice at -85 dBm or stronger. The gateways have no limit: they use every frame from your meter that decodes. `b8` is byte 8 of the frame (the version field).
 - `Survey Found Meters` is sorted strongest first and cut to Home Assistant's 255-character limit, about 15 meters. The 30-second log always has the full list.
 - The XIAO survey also has `Survey Strongest Meter`, `Survey Strongest RSSI`, `Survey Frame Count` and a `Survey Clear Found Meters` button.
 - The surveys set `api: reboot_timeout: 0s`, so they don't restart when nothing connects to them.

@@ -163,7 +163,7 @@ wmbus_radio:
             }
 
             // log to list: strong Diehl frames, but require two hits before committing
-            if (rssi >= -70 && diehl) {
+            if (rssi >= -85 && diehl) {
               auto &ids = id(found_ids);
               bool committed = false;
               for (size_t i = 0; i < ids.size(); i++) {

@@ -136,7 +136,7 @@ script:
               ESP_LOGI("survey", "  0x%s  %ddBm  b8=%02X",
                        ids[i].c_str(), id(found_rssis)[i], id(found_byte8s)[i]);
           }
-  # No display: the LED blinks for each strong Diehl frame (-70 dBm or better)
+  # No display: the LED blinks for each Diehl frame at -85 dBm or better
   - id: blink_led
     mode: restart
     then:
@@ -182,7 +182,7 @@ wmbus_radio:
             }
 
             // log to list: strong Diehl frames, but require two hits before committing
-            if (rssi >= -70 && diehl) {
+            if (rssi >= -85 && diehl) {
               id(blink_led).execute();
               auto &ids = id(found_ids);
               bool committed = false;
