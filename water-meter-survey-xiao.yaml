@@ -1,0 +1,239 @@
+esphome:
+  name: water-meter-survey-xiao
+  friendly_name: Water Meter Survey XIAO
+
+esp32:
+  board: seeed_xiao_esp32s3
+  variant: esp32s3
+  framework:
+    type: esp-idf
+
+external_components:
+  - source: github://SzczepanLeon/esphome-components@main
+    components: [ wmbus_common, wmbus_radio ]
+
+logger:
+  level: INFO
+  baud_rate: 115200
+
+wifi:
+  ssid: "YOUR_WIFI_SSID"
+  password: "YOUR_WIFI_PASSWORD"
+
+api:
+
+ota:
+  - platform: esphome
+
+globals:
+  - id: frame_count
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: found_ids
+    type: std::vector<std::string>
+    restore_value: false
+  - id: found_rssis
+    type: std::vector<int>
+    restore_value: false
+  - id: found_byte8s
+    type: std::vector<int>
+    restore_value: false
+  - id: pending_ids
+    type: std::vector<std::string>
+    restore_value: false
+  - id: pending_rssis
+    type: std::vector<int>
+    restore_value: false
+  - id: best_id
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: best_rssi
+    type: int
+    restore_value: false
+    initial_value: '-200'
+  - id: best_is_sap
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: best_set_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+# Wio-SX1262 RF switch receive enable (B2B connector).
+# Held high permanently; this is a receive-only survey.
+output:
+  - platform: gpio
+    id: rf_rxen
+    pin: GPIO38
+  - platform: gpio
+    id: status_led
+    pin:
+      number: GPIO21
+      inverted: true
+
+switch:
+  - platform: output
+    id: rf_rxen_switch
+    output: rf_rxen
+    restore_mode: ALWAYS_ON
+    internal: true
+
+# Wio-SX1262 kit, B2B connector
+spi:
+  clk_pin: GPIO7
+  mosi_pin: GPIO9
+  miso_pin: GPIO8
+
+# No display: the LED blinks for each strong Diehl frame (-70 dBm or better)
+script:
+  - id: blink_led
+    mode: restart
+    then:
+      - output.turn_on: status_led
+      - delay: 100ms
+      - output.turn_off: status_led
+
+wmbus_radio:
+  radio_type: SX1262
+  cs_pin: GPIO41
+  reset_pin: GPIO42
+  busy_pin: GPIO40
+  irq_pin: GPIO39
+  rx_gain: BOOSTED
+  rf_switch: true
+  has_tcxo: true
+  on_frame:
+    - then:
+        - lambda: |-
+            auto d = frame->data();
+            if (d.size() < 10) return;
+            id(frame_count) += 1;
+            int rssi = frame->rssi();
+            uint16_t m = d[2] | (d[3] << 8);
+            bool diehl = (m == 0x4C30);
+            uint32_t now = millis();
+
+            char buf[9];
+            snprintf(buf, sizeof(buf), "%02X%02X%02X%02X", d[7], d[6], d[5], d[4]);
+            std::string sid(buf);
+
+            // live strongest (expires after 5s so moving hands over)
+            if (now - id(best_set_ms) > 5000) id(best_rssi) = -200;
+            if (rssi >= id(best_rssi)) {
+              id(best_id) = sid;
+              id(best_rssi) = rssi;
+              id(best_is_sap) = diehl;
+              id(best_set_ms) = now;
+            }
+
+            // log to list: strong Diehl frames, but require two hits before committing
+            if (rssi >= -70 && diehl) {
+              id(blink_led).execute();
+              auto &ids = id(found_ids);
+              bool committed = false;
+              for (size_t i = 0; i < ids.size(); i++) {
+                if (ids[i] == sid) {
+                  committed = true;
+                  if (rssi > id(found_rssis)[i]) {
+                    id(found_rssis)[i] = rssi;
+                    id(found_byte8s)[i] = d[8];
+                  }
+                  break;
+                }
+              }
+              if (!committed) {
+                // not yet in the found list — check the pending (seen-once) list
+                auto &pids = id(pending_ids);
+                bool was_pending = false;
+                for (size_t i = 0; i < pids.size(); i++) {
+                  if (pids[i] == sid) {
+                    was_pending = true;
+                    // second hit — promote to the found list
+                    ids.push_back(sid);
+                    id(found_rssis).push_back(rssi > id(pending_rssis)[i] ? rssi : id(pending_rssis)[i]);
+                    id(found_byte8s).push_back(d[8]);
+                    pids.erase(pids.begin() + i);
+                    id(pending_rssis).erase(id(pending_rssis).begin() + i);
+                    ESP_LOGI("survey", "NEW meter %s  %ddBm  b8=%02X  (total %d)",
+                             sid.c_str(), rssi, d[8], (int) ids.size());
+                    std::string out;
+                    for (size_t j = 0; j < ids.size(); j++) {
+                      char line[32];
+                      snprintf(line, sizeof(line), "%s:%d:%02X",
+                               ids[j].c_str(), id(found_rssis)[j], id(found_byte8s)[j]);
+                      if (j) out += ", ";
+                      out += line;
+                    }
+                    id(found_list).publish_state(out);
+                    break;
+                  }
+                }
+                if (!was_pending) {
+                  // first hit — hold it in pending
+                  pids.push_back(sid);
+                  id(pending_rssis).push_back(rssi);
+                }
+              }
+            }
+        - logger.log:
+            format: "FRAME  RSSI: %ddBm  HEX: %s"
+            args: [ frame->rssi(), frame->as_hex().c_str() ]
+
+text_sensor:
+  - platform: template
+    id: found_list
+    name: "Survey Found Meters"
+
+  # Stands in for the Heltec's OLED: the strongest meter heard in the last few seconds
+  - platform: template
+    id: strongest_meter
+    name: "Survey Strongest Meter"
+    update_interval: never
+
+sensor:
+  - platform: template
+    id: strongest_rssi
+    name: "Survey Strongest RSSI"
+    device_class: signal_strength
+    unit_of_measurement: "dBm"
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    name: "Survey Frame Count"
+    state_class: total_increasing
+    accuracy_decimals: 0
+    lambda: 'return id(frame_count);'
+    update_interval: 10s
+
+interval:
+  - interval: 2s
+    then:
+      - lambda: |-
+          uint32_t age = (millis() - id(best_set_ms)) / 1000;
+          if (id(best_rssi) > -200 && age < 8) {
+            std::string s = id(best_id) + (id(best_is_sap) ? " Diehl" : " other");
+            if (!id(strongest_meter).has_state() || id(strongest_meter).state != s)
+              id(strongest_meter).publish_state(s);
+            if (!id(strongest_rssi).has_state() || id(strongest_rssi).state != id(best_rssi))
+              id(strongest_rssi).publish_state(id(best_rssi));
+          } else if (!id(strongest_meter).has_state() || id(strongest_meter).state != "none") {
+            id(strongest_meter).publish_state("none");
+            id(strongest_rssi).publish_state(NAN);
+          }
+
+# Stands in for the Heltec's long press on PRG
+button:
+  - platform: template
+    name: "Survey Clear Found Meters"
+    on_press:
+      - lambda: |-
+          id(found_ids).clear();
+          id(found_rssis).clear();
+          id(found_byte8s).clear();
+          id(pending_ids).clear();
+          id(pending_rssis).clear();
+          id(found_list).publish_state("");

@@ -9,6 +9,7 @@ Built on [SzczepanLeon/esphome-components](https://github.com/SzczepanLeon/espho
 | File | Hardware | Purpose |
 |---|---|---|
 | `water-meter-survey.yaml` | Heltec WiFi LoRa 32 V3 | Survey: logs every wM-Bus frame to find your meter ID |
+| `water-meter-survey-xiao.yaml` | Seeed XIAO ESP32S3 + Wio-SX1262 kit | Survey: the same, headless (results in the logs and Home Assistant) |
 | `water-meter-gateway.yaml` | Heltec WiFi LoRa 32 V3 | Reader: fixed gateway with OLED display |
 | `water-meter-gateway-xiao.yaml` | Seeed XIAO ESP32S3 + Wio-SX1262 kit | Reader: headless gateway, lower-cost hardware |
 
@@ -86,13 +87,13 @@ Every wM-Bus meter broadcasts an 8-character hexadecimal ID, for example `212458
 
 Steps:
 
-1. Put your Wi-Fi details in `water-meter-survey.yaml`, plug the Heltec in over USB and run:
+1. Put your Wi-Fi details in the survey config for your board (`water-meter-survey.yaml` for the Heltec, `water-meter-survey-xiao.yaml` for the XIAO), plug the board in over USB and run:
 
    ```bash
    esphome run water-meter-survey.yaml
    ```
 
-   Pick the USB port when asked. Once the upload finishes, the command keeps showing the device logs. To watch the logs again later, run `esphome logs water-meter-survey.yaml`.
+   (Use the XIAO file name instead if that's your board.) Pick the USB port when asked. Once the upload finishes, the command keeps showing the device logs. To watch the logs again later, run `esphome logs` with the same file name.
 2. Take the board close to your water meter and watch for lines like this:
 
    ```
@@ -100,9 +101,10 @@ Steps:
    ```
 
    `2124589C` is the meter ID. `NEW meter` lines only appear for Diehl meters heard twice at -70 dBm or stronger. The `FRAME` lines log every frame, from any brand and at any signal strength.
-3. The same information appears in two other places:
-   - **OLED:** the large text shows the ID of the strongest meter heard in the last few seconds. Short press PRG to step through the found meters, and long press to clear the list.
-   - **Home Assistant:** the `Survey Found Meters` sensor lists the found meters as `ID:RSSI:b8`.
+3. The same information appears in other places:
+   - **Heltec OLED:** the large text shows the ID of the strongest meter heard in the last few seconds. Short press PRG to step through the found meters, and long press to clear the list.
+   - **XIAO LED:** blinks for each frame from a Diehl meter at -70 dBm or stronger, so it blinks more as you get close to one.
+   - **Home Assistant:** the `Survey Found Meters` sensor lists the found meters as `ID:RSSI:b8`. The XIAO survey also has `Survey Strongest Meter` and `Survey Strongest RSSI` (the strongest meter heard in the last few seconds, like the Heltec's OLED) and a `Survey Clear Found Meters` button.
 4. Your meter is usually the one whose signal (RSSI, in dBm, closer to 0 is stronger) rises clearly above the rest when you hold the board next to it. On an estate with identical properties, the strongest signal is not always yours, so confirm it in one of two ways:
    - **Check the serial number:** copy the `HEX:` value from a `FRAME` line for that meter into the [wmbusmeters analyzer](https://wmbusmeters.org/analyze/). Compare the decoded `prefix` and `serial_number` with the markings on the meter, and `total_m3` with the dial.
    - **Test it in the gateway:** follow step 2 with that ID and check that Water Total matches the dial.
@@ -151,7 +153,7 @@ For daily or monthly consumption, point a Utility Meter helper at Water Total.
 
 ### XIAO status LED
 
-The yellow user LED flashes on each received telegram, roughly every 8 seconds.
+In the gateway, the yellow user LED flashes on each received telegram from your meter, roughly every 8 seconds.
 
 ## Flashing
 
