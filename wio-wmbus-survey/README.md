@@ -15,14 +15,14 @@ Back to Meshtastic any time via https://flasher.meshtastic.org
 - Joystick up/down: select meter
 - Joystick press: list / detail view
 - Joystick left/right (detail view): set house number. Hold to repeat. An unlabelled meter starts next to the last number you used. Stepping to 0 removes the label.
-- Joystick left (list view): settings screen (see below; press goes back)
+- Joystick left (list view): settings screen (see below; right goes back)
 - Joystick right (list view): diagnostics screen (any of left/right/press goes back)
 - User button: sort by best RSSI / last seen
 - Screen turns off after 2 minutes without a button press (changeable in settings); the next press only wakes it. A new leak or low battery wakes it too.
 - Beeps: three short = meter newly reporting a leak; two low = battery below 3.5 V
 
 ## Settings
-Up/down picks a setting, left/right changes it, press goes back. Saved to the internal flash a few seconds after the last change.
+Up/down picks a setting, press changes it (screen off steps through its choices), right goes back. Saved to the internal flash a few seconds after the last change.
 - Bluetooth (default off): lets a phone connect, see below. `linked` = a phone is connected
 - GPS: off puts the GPS module in standby, which saves power (e.g. when leaving the tracker by your own meter). No positions are recorded then. Times keep running from the last GPS time, if there was one since power-on
 - Screen off: 30 s, 1 min, 2 min, 5 min or never

@@ -1455,7 +1455,7 @@ void drawSettings() {
       case SET_SCREEN: name = "Screen off"; val = SCREEN_OFF_NAMES[settings.screenOff]; break;
       case SET_BEEPS: name = "Beeps"; val = settings.beeps ? "on" : "off"; break;
       case SET_SORT: name = "Sort"; val = settings.sortByRssi ? "best RSSI" : "last seen"; break;
-      case SET_FORGET: name = "Forget phones"; val = forgotAt && millis() - forgotAt < 3000 ? "done" : "<>"; break;
+      case SET_FORGET: name = "Forget phones"; val = forgotAt && millis() - forgotAt < 3000 ? "done" : "press"; break;
     }
     snprintf(line, sizeof(line), "%-14s%10s", name, val);
     int y = 18 + i * 9;
@@ -1531,7 +1531,8 @@ void settingsChanged() {
   lastSettingsEdit = millis();
 }
 
-void changeSetting(int i, int dir) {
+// Joystick press: toggle, or step to the next choice (wrapping round).
+void changeSetting(int i) {
   switch (i) {
     case SET_BT:
       settings.ble = !settings.ble;
@@ -1543,7 +1544,7 @@ void changeSetting(int i, int dir) {
       applyGps();
       break;
     case SET_SCREEN:
-      settings.screenOff = constrain(settings.screenOff + dir, 0, N_SCREEN_OFF - 1);
+      settings.screenOff = (settings.screenOff + 1) % N_SCREEN_OFF;
       break;
     case SET_BEEPS: settings.beeps = !settings.beeps; break;
     case SET_SORT:
@@ -1598,8 +1599,8 @@ void handleButtons() {
   if (settingsOpen) {
     if (up && setSel > 0) setSel--;
     if (down && setSel < N_SETTINGS - 1) setSel++;
-    if (lrOnce) changeSetting(setSel, r ? 1 : -1);
-    if (press) settingsOpen = false;
+    if (press) changeSetting(setSel);
+    if (r && lrOnce) settingsOpen = false;  // back the way it was opened
   } else if (diag) {
     if (lrOnce || press) diag = false;
   } else {
