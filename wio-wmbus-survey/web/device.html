@@ -258,10 +258,10 @@ const PHOTO_W = 2700, PHOTO_H = 3880;
 const USER_BTN = { x: 1690, y: 2845, r: 190 };
 const JOY = { x: 2248, y: 2858, knob: 110, reach: 420 };  // knob = press area, reach = direction taps
 const SCREEN = { x0: 689, y0: 1317, x1: 2041, y1: 1993 };
-const device = $('#device'), hit = $('#hit');
+const photo = $('#device'), hit = $('#hit');
 
 function flash(x, y, r) {
-  const w = device.clientWidth / PHOTO_W;
+  const w = photo.clientWidth / PHOTO_W;
   hit.style.left = x * w + 'px';
   hit.style.top = y * w + 'px';
   hit.style.width = hit.style.height = 2 * r * w + 'px';
@@ -290,9 +290,9 @@ function pushDir(d) {
 }
 
 let gesture = null;  // pointer on the knob: a tap presses, a drag pushes that way
-device.addEventListener('pointerdown', (e) => {
+photo.addEventListener('pointerdown', (e) => {
   e.preventDefault();
-  const rect = device.getBoundingClientRect();
+  const rect = photo.getBoundingClientRect();
   const x = (e.clientX - rect.left) * PHOTO_W / rect.width, y = (e.clientY - rect.top) * PHOTO_W / rect.width;
   const dUser = Math.hypot(x - USER_BTN.x, y - USER_BTN.y), dJoy = Math.hypot(x - JOY.x, y - JOY.y);
   if (x >= SCREEN.x0 && x <= SCREEN.x1 && y >= SCREEN.y0 && y <= SCREEN.y1) {
@@ -301,15 +301,15 @@ device.addEventListener('pointerdown', (e) => {
     flash(USER_BTN.x, USER_BTN.y, 120);
     sendKey('B'.charCodeAt(0));
   } else if (dJoy < JOY.knob) {
-    device.setPointerCapture(e.pointerId);
+    photo.setPointerCapture(e.pointerId);
     gesture = { x: e.clientX, y: e.clientY, dragged: false };
     flash(JOY.x, JOY.y, 70);
   } else if (dJoy < JOY.reach) {
-    device.setPointerCapture(e.pointerId);
+    photo.setPointerCapture(e.pointerId);
     pushDir(direction(x - JOY.x, y - JOY.y));
   }
 });
-device.addEventListener('pointermove', (e) => {
+photo.addEventListener('pointermove', (e) => {
   if (!gesture || gesture.dragged) return;
   const dx = e.clientX - gesture.x, dy = e.clientY - gesture.y;
   if (Math.hypot(dx, dy) < 14) return;
@@ -322,8 +322,8 @@ function release() {
   stopHold();
   setTimeout(unflash, 80);
 }
-['pointerup', 'pointercancel'].forEach((t) => device.addEventListener(t, release));
-device.addEventListener('contextmenu', (e) => e.preventDefault());
+['pointerup', 'pointercancel'].forEach((t) => photo.addEventListener(t, release));
+photo.addEventListener('contextmenu', (e) => e.preventDefault());
 
 const KEYMAP = { ArrowUp: 'U', ArrowDown: 'D', ArrowLeft: 'L', ArrowRight: 'R', Enter: 'P', ' ': 'P', b: 'B' };
 document.addEventListener('keydown', (e) => {
