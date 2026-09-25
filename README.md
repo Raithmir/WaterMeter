@@ -6,6 +6,8 @@ Many water meters have a radio module that broadcasts the meter reading every fe
 
 It's written for the **Diehl IZAR** radio module (IZAR RC 868 i W R4, a clip-on module on top of the meter), which broadcasts unencrypted. Other wM-Bus meters may work with changes to the config, but aren't covered here.
 
+<img width="3102" height="2329" alt="PXL_20260913_155405676" src="https://github.com/user-attachments/assets/d4ce1727-2ad6-4aa4-8399-4ad5a9035b4b" />
+
 ## How it works
 
 There are two stages, each with its own firmware (the program that runs on the board):
