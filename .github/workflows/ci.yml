@@ -1,5 +1,5 @@
-# Host tests, survey firmware build and ESPHome config check on every push.
-# A tag v* also publishes the survey firmware.uf2 as a GitHub release.
+# Host tests, survey firmware build and ESPHome compiles on every push.
+# A tag v* also publishes the survey firmware (Wio .uf2, Heltec and XIAO .bin) as a GitHub release.
 name: CI
 
 on:
@@ -42,20 +42,43 @@ jobs:
 
   esphome:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - water-meter-survey
+          - water-meter-survey-xiao
+          - water-meter-gateway
+          - water-meter-gateway-xiao
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/esphome
+          key: esphome-2026.9.0-esp32s3
       - run: pip install esphome==2026.9.0
-      - name: Validate configs
+      - name: Compile
         # The committed configs hold placeholders; give them values that pass validation.
+        # Wi-Fi is set after flashing (improv_serial / fallback hotspot), so the survey
+        # builds are usable as released.
         run: |
-          mkdir ci
-          for f in *.yaml; do
-            sed -e 's/YOUR_METER_ID/0x12345678/' -e 's/YOUR_WIFI_PASSWORD/ci-password/' "$f" > "ci/$f"
-            esphome config "ci/$f" > /dev/null
-          done
+          mkdir ci dist
+          f=${{ matrix.config }}.yaml
+          sed -e 's/YOUR_METER_ID/0x12345678/' -e 's/YOUR_WIFI_PASSWORD/ci-password/' "$f" > "ci/$f"
+          esphome compile "ci/$f"
+          cp "$(find ci/.esphome/build/${{ matrix.config }} -name firmware.factory.bin | head -1)" \
+             "dist/${{ matrix.config }}.factory.bin"
+      # Only the surveys are released: the gateways have the meter ID compiled in
+      - if: startsWith(matrix.config, 'water-meter-survey')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.config }}-firmware
+          path: dist/${{ matrix.config }}.factory.bin
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -66,8 +89,13 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: wio-wmbus-survey-firmware
+          pattern: "*-firmware"
+          merge-multiple: true
+      - run: mv firmware.uf2 wio-tracker-survey.uf2
       - uses: softprops/action-gh-release@v2
         with:
-          files: firmware.uf2
+          files: |
+            wio-tracker-survey.uf2
+            water-meter-survey.factory.bin
+            water-meter-survey-xiao.factory.bin
           generate_release_notes: true

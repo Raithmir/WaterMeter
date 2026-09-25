@@ -18,6 +18,15 @@ logger:
 wifi:
   ssid: "YOUR_WIFI_SSID"
   password: "YOUR_WIFI_PASSWORD"
+  # If the network above can't be joined (e.g. the placeholders are left in), the board
+  # starts this hotspot; join it to enter Wi-Fi details on a setup page.
+  ap:
+    ssid: "Water Meter Survey Setup"
+
+captive_portal:
+
+# Lets web.esphome.io set the Wi-Fi details over USB straight after flashing
+improv_serial:
 
 api:
 

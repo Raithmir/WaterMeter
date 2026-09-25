@@ -73,7 +73,7 @@ Decoder (`wmbus.h`), and survey storage + CSV rows (`snapring.h`, `survey.h`: sn
     g++ -std=c++17 -Isrc test/test_host.cpp -o t && ./t
     g++ -std=c++17 -Isrc test/test_survey.cpp -o ts && ./ts
 
-GitHub Actions runs both, builds the firmware and validates the ESPHome configs on every push. Pushing a tag `v*` attaches `firmware.uf2` to a GitHub release.
+GitHub Actions runs both, builds the firmware and compiles the ESPHome configs on every push. Pushing a tag `v*` publishes a GitHub release with this firmware as `wio-tracker-survey.uf2`, plus the Heltec and XIAO survey firmware.
 
 ## If it doesn't work
 - Screen blank → check serial; the OLED address is auto-detected (0x3C/0x3D). Garbled → set `DISPLAY_SH1106 0` in main.cpp

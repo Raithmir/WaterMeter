@@ -76,6 +76,8 @@ Every config has placeholders to fill in before you compile:
 | `YOUR_WIFI_PASSWORD` | Your Wi-Fi password |
 | `YOUR_METER_ID` | Your meter ID with a `0x` prefix, e.g. `0x2124589C` (gateway configs only; see step 2) |
 
+If you leave the Wi-Fi placeholders in, or the board can't join your network, it starts a hotspot named `Water Meter ... Setup`. Join it from your phone and a setup page asks for your Wi-Fi details. [web.esphome.io](https://web.esphome.io) can also set them over USB (see step 1).
+
 The first flash of a new board must be over USB. After that, ESPHome can update it over Wi-Fi (OTA). Once the board is on your Wi-Fi, Home Assistant should discover it under Settings → Devices & services. Add it there to get the entities.
 
 ### 1. Survey: find your meter ID
@@ -85,7 +87,17 @@ Every wM-Bus meter broadcasts an 8-character hexadecimal ID, for example `212458
 - The ID is **not** the serial number printed on the meter, so you can't read it off the meter body. Listen for it with the survey config.
 - Your neighbours' meters broadcast too, so expect to see several IDs.
 
-Steps:
+#### Quickest: prebuilt survey firmware
+
+You don't need to install ESPHome to find the ID. The survey needs no meter ID, so there's ready-made firmware for it. Use Chrome or Edge on a computer:
+
+1. Download the survey firmware for your board from the [latest release](https://github.com/Raithmir/WaterMeter/releases/latest): `water-meter-survey.factory.bin` for the Heltec or `water-meter-survey-xiao.factory.bin` for the XIAO. (For the Wio Tracker L1, use `wio-tracker-survey.uf2` and follow the [Wio instructions](wio-wmbus-survey/).)
+2. Plug the board in over USB, open [web.esphome.io](https://web.esphome.io) and choose **Connect**, then pick the board's port. If no port appears or the connection fails, put the board in bootloader mode first (see [Flashing](#flashing)).
+3. Choose **Install**, select the `.bin` file you downloaded and wait for the upload to finish. Press RST (Heltec) or unplug and replug (XIAO) afterwards.
+4. Optional: choose **Connect** again, then **Configure Wi-Fi** to put the board on your network so Home Assistant can find it. Without Wi-Fi, the survey still works over USB.
+5. Choose **Logs** and carry on from step 2 below.
+
+#### Building it yourself
 
 1. Put your Wi-Fi details in the survey config for your board (`water-meter-survey.yaml` for the Heltec, `water-meter-survey-xiao.yaml` for the XIAO), plug the board in over USB and run:
 
@@ -164,6 +176,8 @@ esptool --chip esp32s3 --baud 460800 write-flash 0x0 firmware.factory.bin
 ```
 
 **XIAO ESP32S3:** hold BOOT while plugging in USB, then flash as above.
+
+Both boards can also be flashed from the browser at [web.esphome.io](https://web.esphome.io) with a `.factory.bin` file (see step 1 under Usage).
 
 ## Troubleshooting
 
