@@ -75,11 +75,37 @@ Each meter keeps its 5 strongest GPS-tagged receptions. Only receptions with a f
 - Labels (and keys) → internal flash: 3 s after the last edit
 
 ## Files
-- `survey.csv`: one row per meter, latest state (same columns as the serial `d` dump, strongest meters first). IZAR meters also report `billing_litres` + `billing_date` (the reading the meter stored on the billing date the water company set, 31 Dec on ours, so reading − billing = use since then; blank until a new meter reaches its first billing date; wmbusmeters calls these "last month"), `battery_years` left and `period_s` between broadcasts. `serial` is the number printed on the meter (e.g. `H25XA036488`: supplier letter, year made, type and diameter letters, serial), worked out from the radio header as wmbusmeters does; only Sappel-made IZAR meters (manufacturer `SAP`) carry it, so it's blank for the rest.
+- `survey.csv`: one row per meter, latest state (same columns as the serial `d` dump, strongest meters first). IZAR meters also report `billing_litres` + `billing_date` (the reading the meter stored on the billing date the water company set, 31 Dec on ours, so reading − billing = use since then; blank until a new meter reaches its first billing date; wmbusmeters calls these "last month"), `battery_years` left and `period_s` between broadcasts. `serial` is the number printed on the meter (e.g. `H25XA036488`, see [Printed serial numbers](#printed-serial-numbers-izar)); only Sappel-made IZAR meters (manufacturer `SAP`) carry it, so it's blank for the rest.
 - `history.csv`: one row per meter per walk: `utc,id,label,mfct,type,litres,billing_litres,billing_date,alarms,battery_years,rssi,serial` (files started before these were renamed keep the old `last_month_*` header names; the columns are the same. Files started before `serial` was added keep their header without it, and newer rows have it as an extra last column). A meter heard again within 6 h counts as the same walk, even across a power cycle; an alarm change always adds a row. Rows need GPS time, so meters heard before the first fix are logged when it arrives, stamped with that time.
 - `raw.csv`: for meters whose reading isn't decoded, one raw telegram per walk (hex, CRCs removed, the form wmbusmeters accepts), with the radio mode. Before a GPS fix the time is left blank.
 
 Rows are collected in RAM (and saved in the survey snapshots) and appended to the files when a computer is plugged in. Around 50 houses walked weekly is ~150 KB of history a year; the ~1 MB left beside `state.bin` holds about six years of that.
+
+## Printed serial numbers (IZAR)
+Sappel-made IZAR meters (manufacturer `SAP`) don't broadcast a separate serial number. Their printed number is packed into the radio address, so the tracker works it out from the header, the same way wmbusmeters' `izar` driver does. It appears in `survey.csv`, `history.csv`, the `d` dump and on the meter's detail screen. Other meters leave it blank.
+
+    H 25 X A 036488
+    │ │  │ │ └ serial, 6 digits
+    │ │  │ └ diameter code letter
+    │ │  └ meter type code letter
+    │ └ year made (2025)
+    └ supplier code letter
+
+The letters are the maker's codes; the tracker only reproduces them, it doesn't say what they stand for. Meters from the same batch share a prefix, e.g. all the meters on our street start with `H25VA`.
+
+**Meter ID and header → serial.** The tracker's `id` (e.g. `217e06c8`) is the 4 address bytes as wmbusmeters prints them. `ver` and `type` are the next two header bytes, which SAP frames reuse for the letters. So on these meters the `type` shown (`water (04)`) comes from the supplier letter, not from a real device type. Letters count from `A` = 1:
+
+- year and serial = `id & 0x03FFFFFF` in decimal, 8 digits: the first 2 are the year, the last 6 the serial (`0x017e06c8` = 25036488 → `25`, `036488`)
+- supplier = `((type & 0x0F) << 1) | (ver >> 7)` (4, 0x60 → 8 = `H`)
+- type letter = `(ver & 0x7C) >> 2` (0x60 → 24 = `X`)
+- diameter = `((ver & 0x03) << 3) | (id >> 29)` (0x60, 0x217e06c8 → 1 = `A`)
+
+**Serial → meter ID.** This lets you find a meter in the survey from the number on its label. With supplier `s`, type letter `k` and diameter `d` as numbers (`A` = 1) and `n` = year × 1000000 + serial:
+
+- `id = ((d & 7) << 29) | n`: `H25XA036488` → `(1 << 29) | 25036488` = `217e06c8`
+- `ver = ((s & 1) << 7) | (k << 2) | (d >> 3)` = `60`, and the low 4 bits of `type` = `s >> 1` = `4`
+
+In practice only the ID matters. For a diameter letter `A`, `id` = `0x20000000 + n`. For example, `H25VA994697` → 25994697 = `0x018ca5c9` → `218ca5c9` (Python: `'%08x' % (0x20000000 + 25994697)`).
 
 ## USB drive
 Plug into a computer and a read-only drive called `WMBUS` appears with the files above. `survey.csv` is written, and waiting log rows appended, at the moment you plug in.
