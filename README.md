@@ -12,7 +12,7 @@ It's written for the **Diehl IZAR** radio module (IZAR RC 868 i W R4, a clip-on 
 
 There are two stages, each with its own firmware (the program that runs on the board):
 
-1. **Survey: find your meter's ID.** Every meter broadcasts an ID, and your neighbours' meters broadcast too. You take the board near your meter to find out which ID is yours. You don't need Home Assistant for this, and there's ready-made firmware you can install from your web browser. For Diehl IZAR meters there's a [shortcut](#shortcut-work-it-out-from-the-number-on-your-meter) that works out the ID from the number printed on the meter instead.
+1. **Survey: find your meter's ID.** Every meter broadcasts an ID. You take the board near your meter to find out which ID is yours. You don't need Home Assistant for this, and there's ready-made firmware you can install from your web browser. For Diehl IZAR meters there's a [shortcut](#shortcut-work-it-out-from-the-number-on-your-meter) that works out the ID from the number printed on the meter instead.
 2. **Gateway: read your meter permanently.** You put your meter's ID into the gateway config and install it on the board, then leave the board somewhere in range of the meter. It sends every reading to Home Assistant.
 
 The same board does both jobs: install the survey first, then replace it with the gateway.
