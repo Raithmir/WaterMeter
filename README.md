@@ -44,8 +44,6 @@ If your meter is a Diehl IZAR with a number like `H25XA036488` printed on it (on
 
 If the gateway then never shows a reading, your meter stores its ID differently. Come back and do the survey below.
 
-For any other meter, the ID can't be read off the meter. You have to listen for it with the survey, as below.
-
 ### Install the survey firmware
 
 1. Download the survey firmware for your board from the [latest release](https://github.com/Raithmir/WaterMeter/releases/latest):
