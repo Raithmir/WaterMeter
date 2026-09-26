@@ -100,7 +100,7 @@ The letters are the maker's codes; the tracker only reproduces them, it doesn't 
 - type letter = `(ver & 0x7C) >> 2` (0x60 → 24 = `X`)
 - diameter = `((ver & 0x03) << 3) | (id >> 29)` (0x60, 0x217e06c8 → 1 = `A`)
 
-**Serial → meter ID.** This lets you find a meter in the survey from the number on its label. With supplier `s`, type letter `k` and diameter `d` as numbers (`A` = 1) and `n` = year × 1000000 + serial:
+**Serial → meter ID.** This lets you find a meter in the survey from the number on its label. The [meter ID converter](https://raithmir.github.io/WaterMeter/meter-id/) does this for you (source in [`meter-id/`](../meter-id/)). With supplier `s`, type letter `k` and diameter `d` as numbers (`A` = 1) and `n` = year × 1000000 + serial:
 
 - `id = ((d & 7) << 29) | n`: `H25XA036488` → `(1 << 29) | 25036488` = `217e06c8`
 - `ver = ((s & 1) << 7) | (k << 2) | (d >> 3)` = `60`, and the low 4 bits of `type` = `s >> 1` = `4`
