@@ -18,6 +18,7 @@ Back to Meshtastic any time via https://flasher.meshtastic.org
 - Joystick up/down: select meter
 - Joystick press: list / detail view
 - Joystick left/right (detail view): set house number. Hold to repeat. An unlabelled meter starts next to the last number you used. Stepping to 0 removes the label.
+- Detail view, second line: for IZAR meters made by Sappel (manufacturer `SAP`), the number printed on the meter, e.g. `H25XA036488`, so you can check you're labelling the right one. Other meters show manufacturer and radio mode there.
 - Joystick left (list view): settings screen (see below; right goes back)
 - Joystick right (list view): diagnostics screen (any of left/right/press goes back)
 - User button: sort by best RSSI / last seen
@@ -74,8 +75,8 @@ Each meter keeps its 5 strongest GPS-tagged receptions. Only receptions with a f
 - Labels (and keys) → internal flash: 3 s after the last edit
 
 ## Files
-- `survey.csv`: one row per meter, latest state (same columns as the serial `d` dump, strongest meters first). IZAR meters also report `billing_litres` + `billing_date` (the reading the meter stored on the billing date the water company set, 31 Dec on ours, so reading − billing = use since then; blank until a new meter reaches its first billing date; wmbusmeters calls these "last month"), `battery_years` left and `period_s` between broadcasts.
-- `history.csv`: one row per meter per walk: `utc,id,label,mfct,type,litres,billing_litres,billing_date,alarms,battery_years,rssi` (files started before these were renamed keep the old `last_month_*` header names; the columns are the same). A meter heard again within 6 h counts as the same walk, even across a power cycle; an alarm change always adds a row. Rows need GPS time, so meters heard before the first fix are logged when it arrives, stamped with that time.
+- `survey.csv`: one row per meter, latest state (same columns as the serial `d` dump, strongest meters first). IZAR meters also report `billing_litres` + `billing_date` (the reading the meter stored on the billing date the water company set, 31 Dec on ours, so reading − billing = use since then; blank until a new meter reaches its first billing date; wmbusmeters calls these "last month"), `battery_years` left and `period_s` between broadcasts. `serial` is the number printed on the meter (e.g. `H25XA036488`: supplier letter, year made, type and diameter letters, serial), worked out from the radio header as wmbusmeters does; only Sappel-made IZAR meters (manufacturer `SAP`) carry it, so it's blank for the rest.
+- `history.csv`: one row per meter per walk: `utc,id,label,mfct,type,litres,billing_litres,billing_date,alarms,battery_years,rssi,serial` (files started before these were renamed keep the old `last_month_*` header names; the columns are the same. Files started before `serial` was added keep their header without it, and newer rows have it as an extra last column). A meter heard again within 6 h counts as the same walk, even across a power cycle; an alarm change always adds a row. Rows need GPS time, so meters heard before the first fix are logged when it arrives, stamped with that time.
 - `raw.csv`: for meters whose reading isn't decoded, one raw telegram per walk (hex, CRCs removed, the form wmbusmeters accepts), with the radio mode. Before a GPS fix the time is left blank.
 
 Rows are collected in RAM (and saved in the survey snapshots) and appended to the files when a computer is plugged in. Around 50 houses walked weekly is ~150 KB of history a year; the ~1 MB left beside `state.bin` holds about six years of that.
@@ -89,7 +90,7 @@ While a computer has the drive the tracker keeps receiving and saving the survey
     pio device monitor
 The same commands work from the command box on the phone page.
 - `s` status: build date, QSPI flash, save ring, USB drive, battery, frame counters, GPS reception (sentences ok/bad, fix age, HDOP), Bluetooth and settings
-- `d` dump table as CSV (label, mode T1/C1a/C1b, manufacturer, type, reading, alarms, UTC, lat, lon, spread)
+- `d` dump table as CSV (label, printed serial, mode T1/C1a/C1b, manufacturer, type, reading, alarms, UTC, lat, lon, spread)
 - `c` clear survey (labels and history kept)
 - `h` print history.csv, `r` print raw.csv (not while a computer has the drive: open the files there)
 - `HCLEAR` delete history.csv and raw.csv

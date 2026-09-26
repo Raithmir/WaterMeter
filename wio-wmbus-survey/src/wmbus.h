@@ -6,6 +6,7 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 
 namespace wmbus {
@@ -242,6 +243,23 @@ inline bool decodeIzar(const Telegram &t, uint32_t &litres, uint32_t *billing = 
     return true;
   }
   return false;
+}
+
+// Number printed on a Sappel-made IZAR meter, e.g. "H25XA036488": supplier letter, year made,
+// type and diameter letters, then a 6-digit serial. It's coded in the plain header of frames
+// with manufacturer SAP: address bytes 4-7 (id) plus the version and type bytes (8-9), which
+// such frames reuse for the letters. wmbusmeters driver_izar decodes it only for these frames,
+// so the others return false. out needs 12 bytes.
+inline bool izarSerial(const char *mfct, uint32_t id, uint8_t ver, uint8_t type, char out[12]) {
+  if (strcmp(mfct, "SAP") != 0) return false;
+  uint8_t b7 = id >> 24;
+  uint32_t digits = id & 0x03FFFFFF;  // up to 8 decimal digits: year made (2), serial (6)
+  char supplier = '@' + (((type & 0x0F) << 1) | (ver >> 7));
+  char kind = '@' + ((ver & 0x7C) >> 2);
+  char diameter = '@' + (((ver & 0x03) << 3) | (b7 >> 5));
+  snprintf(out, 12, "%c%02lu%c%c%06lu", supplier, (unsigned long)(digits / 1000000), kind, diameter,
+           (unsigned long)(digits % 1000000));
+  return true;
 }
 
 // ---- IZAR alarm flags (plain header bytes 11-13, per wmbusmeters driver_izar) ----

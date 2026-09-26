@@ -257,10 +257,10 @@ static void testCsv() {
   Meter iz = izarMeter();
   surveyRow(row, sizeof(row), iz, "12A");
   CHECK(std::string(row) ==
-        "1a2b3c4d,12A,T1,SAP,water (85),a0,123456,LEAK leak(was),-71,-65,42,2026-09-23T14:05:12Z,"
+        "1a2b3c4d,12A,K36H@387917,T1,SAP,water (85),a0,123456,LEAK leak(was),-71,-65,42,2026-09-23T14:05:12Z,"
         "51.5000000,-0.1000000,0.0,1,120000,2026-09-01,9.5,8");
   historyRow(row, sizeof(row), iz, "12A", 1790172312UL);
-  CHECK(std::string(row) == "2026-09-23T14:05:12Z,1a2b3c4d,12A,SAP,water,123456,120000,2026-09-01,LEAK leak(was),9.5,-71");
+  CHECK(std::string(row) == "2026-09-23T14:05:12Z,1a2b3c4d,12A,SAP,water,123456,120000,2026-09-01,LEAK leak(was),9.5,-71,K36H@387917");
 
   // Every kind of meter gives rows with the header's columns.
   Meter kinds[4] = {iz, iz, {}, {}};

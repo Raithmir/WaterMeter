@@ -149,6 +149,12 @@ inline void typeNames(const Meter &m, const char *&shortName, const char *&longN
 
 inline const char *modeName(const Meter &m) { return wmbus::modeStr((wmbus::Mode)m.mode); }
 
+// Number printed on the meter (IZAR meters made by Sappel only), else empty. out needs 12 bytes.
+inline bool meterSerial(const Meter &m, char out[12]) {
+  out[0] = 0;
+  return m.hasIzarInfo && wmbus::izarSerial(m.mfct, m.id, m.ver, m.type, out);
+}
+
 // ---------- logging decisions ----------
 // One history row per meter per walk, plus one whenever its alarms change.
 inline bool historyDue(const Meter &m, uint32_t now) {
@@ -159,10 +165,10 @@ inline bool historyDue(const Meter &m, uint32_t now) {
 // Each writes one row without the line ending into out and returns its length. Labels are
 // already free of commas and quotes (main.cpp's setLabel), and no other field can hold one.
 static const char SURVEY_HEADER[] =
-    "id,label,mode,mfct,type,ver,litres,alarms,rssi,best_rssi,count,utc,lat,lon,spread_m,samples,"
+    "id,label,serial,mode,mfct,type,ver,litres,alarms,rssi,best_rssi,count,utc,lat,lon,spread_m,samples,"
     "billing_litres,billing_date,battery_years,period_s";
 static const char HISTORY_HEADER[] =
-    "utc,id,label,mfct,type,litres,billing_litres,billing_date,alarms,battery_years,rssi";
+    "utc,id,label,mfct,type,litres,billing_litres,billing_date,alarms,battery_years,rssi,serial";
 static const char RAW_HEADER[] = "utc,id,label,mode,mfct,type,rssi,telegram";
 
 // Keeps appending after a truncated write without running past the end.
@@ -192,9 +198,10 @@ inline size_t surveyRow(char *out, size_t n, const Meter &m, const char *label) 
   Out o(out, n);
   const char *sn, *ln;
   typeNames(m, sn, ln);
-  char at[48] = "";
-  o.f("%08lx,%s,%s,%s,%s (%02x),%02x,", (unsigned long)m.id, label ? label : "", modeName(m), m.mfct, ln, m.type,
-      m.ver);
+  char at[48] = "", serial[12];
+  meterSerial(m, serial);
+  o.f("%08lx,%s,%s,%s,%s,%s (%02x),%02x,", (unsigned long)m.id, label ? label : "", serial, modeName(m), m.mfct, ln,
+      m.type, m.ver);
   if (m.hasLitres) {
     o.f("%lu", (unsigned long)m.litres);
     wmbus::alarmText(m.alarms, at, sizeof(at));
@@ -232,7 +239,9 @@ inline size_t historyRow(char *out, size_t n, const Meter &m, const char *label,
   billingCols(o, m);
   o.f(",%s,", at);
   if (m.hasIzarInfo) o.f("%.1f", m.battHalfYears / 2.0);
-  o.f(",%d", m.lastRssi);
+  char serial[12];
+  meterSerial(m, serial);
+  o.f(",%d,%s", m.lastRssi, serial);  // last, so older files' columns still line up
   return o.len;
 }
 

@@ -1366,8 +1366,13 @@ void drawDetail() {
   oled.drawStr(0, 7, line);
 
   if (m.hasLitres) {
-    snprintf(line, sizeof(line), "%lu.%03lu m3  %s %s", (unsigned long)(m.litres / 1000), (unsigned long)(m.litres % 1000),
-             m.mfct, modeName(m));
+    char serial[12];
+    if (meterSerial(m, serial))  // the number printed on the meter, to check it's the right one
+      snprintf(line, sizeof(line), "%lu.%03lu m3  %s", (unsigned long)(m.litres / 1000), (unsigned long)(m.litres % 1000),
+               serial);
+    else
+      snprintf(line, sizeof(line), "%lu.%03lu m3  %s %s", (unsigned long)(m.litres / 1000),
+               (unsigned long)(m.litres % 1000), m.mfct, modeName(m));
     oled.drawStr(0, 16, line);
     char at[26];
     wmbus::alarmText(m.alarms, at, sizeof(at));

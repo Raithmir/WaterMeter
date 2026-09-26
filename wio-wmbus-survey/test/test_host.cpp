@@ -119,13 +119,14 @@ static int c1Tests() {
 int main() {
   uint8_t chk[] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
   printf("crc check 0x%04X (expect 0xC2B7)\n", crc16(chk, 9));
-  struct { const char *hex; uint32_t id; uint32_t litres, billing, billingDate, battHalfYears, period; } v[] = {
-      {"1944304C72242421D401A2013D4013DD8B46A4999C1293E582CC", 0x21242472, 3488, 3486, 20190930, 29, 8},
-      {"2944A511780729662366A20118001378D3B3DB8CEDD77731F25832AAF3DA8CADF9774EA673172E8C61F2", 0x66236629, 16760, 11840, 20191130, 24, 8},
-      {"1944A511780779194820A121170013355F8EDB2D03C6912B1E37", 0x20481979, 4366, 0, 20201231, 23, 8},
+  // serial: wmbusmeters' prefix + serial_number ("" = it gives none: not a SAP frame)
+  struct { const char *hex; uint32_t id; uint32_t litres, billing, billingDate, battHalfYears, period; const char *serial; } v[] = {
+      {"1944304C72242421D401A2013D4013DD8B46A4999C1293E582CC", 0x21242472, 3488, 3486, 20190930, 29, 8, "C19UA145842"},
+      {"2944A511780729662366A20118001378D3B3DB8CEDD77731F25832AAF3DA8CADF9774EA673172E8C61F2", 0x66236629, 16760, 11840, 20191130, 24, 8, ""},
+      {"1944A511780779194820A121170013355F8EDB2D03C6912B1E37", 0x20481979, 4366, 0, 20201231, 23, 8, ""},
       // same frame with the billing date's year zeroed: no billing date reached yet
-      {"1944A511780779194820A121170013355F8EDB2D03C6912B9E17", 0x20481979, 4366, 0, 0, 23, 8},
-      {"1944304c9c5824210c04a363140013716577ec59e8663ab0d31c", 0x2124589c, 38944, 38691, 20210201, 20, 32},
+      {"1944A511780779194820A121170013355F8EDB2D03C6912B9E17", 0x20481979, 4366, 0, 0, 23, 8, ""},
+      {"1944304c9c5824210c04a363140013716577ec59e8663ab0d31c", 0x2124589c, 38944, 38691, 20210201, 20, 32, "H19CA159196"},
   };
   int fails = 0;
   for (auto &t : v) {
@@ -149,10 +150,23 @@ int main() {
     printf("  billing: %u l on %u  battery: %.1f y  period: %u s %s\n", lm, lmDate,
            izarBatteryHalfYears(tg) / 2.0, izarPeriodS(tg), extraOk ? "PASS" : "FAIL");
     fails += !extraOk;
+    char serial[12] = "";
+    izarSerial(m, tg.id(), tg.version(), tg.type(), serial);
+    bool serialOk = !strcmp(serial, t.serial);
+    printf("  serial: %s %s\n", serial, serialOk ? "PASS" : "FAIL");
+    fails += !serialOk;
     fails += !ok;
     raw[3] ^= 0x10;  // corrupt -> must not decode OK
     Result r2 = decode(raw.data(), raw.size(), tg, mode);
     if (r2 == Result::OK) { printf("  corruption not detected!\n"); fails++; }
+  }
+  {
+    // A label read off a meter: H25XA036488 is broadcast as 217e06c8 (bytes 8-9 as wmbusmeters reads them).
+    char serial[12];
+    bool ok = izarSerial("SAP", 0x217E06C8, 0x60, 0x04, serial) && !strcmp(serial, "H25XA036488") &&
+              !izarSerial("DME", 0x217E06C8, 0x60, 0x04, serial);
+    printf("serial H25XA036488 -> %s %s\n", serial, ok ? "PASS" : "FAIL");
+    fails += !ok;
   }
   fails += c1Tests();
   {
