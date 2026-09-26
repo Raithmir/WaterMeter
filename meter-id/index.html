@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0d1117">
+<title>Meter ID from Serial</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --line: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --danger: #f85149;
+    --ok: #3fb950;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    max-width: 560px; margin: 0 auto; padding: 16px 16px 40px;
+  }
+  h1 { font-size: 19px; margin: 4px 0 8px; }
+  p { margin: 8px 0; }
+  .note { font-size: 13px; color: var(--muted); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin: 14px 0; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  input {
+    width: 100%; font: 20px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--text); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  #msg { min-height: 1.5em; margin: 10px 0 0; font-size: 14px; }
+  #msg.bad { color: var(--danger); }
+  #result[hidden] { display: none; }
+  .id { display: flex; align-items: center; gap: 10px; margin: 6px 0 12px; }
+  .id code { font: 600 26px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ok); }
+  button {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 12px; cursor: pointer;
+  }
+  pre {
+    margin: 0; padding: 10px 12px; overflow-x: auto; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 8px; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  table { border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+  td { padding: 2px 10px 2px 0; }
+  td:first-child { font-family: ui-monospace, monospace; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<h1>Meter ID from the number on your meter</h1>
+<p>For Diehl IZAR water meters with a number like <code>H25XA036488</code> printed on them: one letter, two digits, two letters, then six digits. The gateway config needs the meter's radio ID, and on these meters it's a different way of writing the same number.</p>
+
+<div class="panel">
+  <label for="serial">Number printed on the meter</label>
+  <input id="serial" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="H25XA036488">
+  <p id="msg" class="note" aria-live="polite">Spaces and dashes are fine.</p>
+  <div id="result" hidden>
+    <div class="id"><code id="id"></code><button id="copy" type="button">Copy</button></div>
+    <p class="note">In the gateway config:</p>
+    <pre id="yaml"></pre>
+  </div>
+</div>
+
+<p class="note"><strong>If the gateway never shows a reading</strong> with this ID, your meter isn't one of these, and you'll need to find its ID with the survey firmware instead. Only meters that wmbusmeters lists with manufacturer <code>SAP</code> carry their number this way.</p>
+
+<p class="note">How it works: the year and the six-digit serial together (<code>25</code> + <code>036488</code> = 25036488) are the ID in hexadecimal (<code>017E06C8</code>). The diameter letter (<code>A</code>) sets the top three bits of it (<code>01</code> → <code>21</code>), giving <code>0x217E06C8</code>. The other two letters aren't part of the ID. Worked out from <a href="https://github.com/wmbusmeters/wmbusmeters/blob/master/src/driver_izar.cc">wmbusmeters' IZAR driver</a>, and checked against its test meters:</p>
+<table>
+  <tr><td>C19UA145842</td><td>→ 0x21242472</td></tr>
+  <tr><td>H19CA159196</td><td>→ 0x2124589C</td></tr>
+  <tr><td>C15SA007710</td><td>→ 0x20E4FFDE</td></tr>
+</table>
+
+<script>
+// Printed number = supplier letter, year (2 digits), type letter, diameter letter, serial (6 digits).
+// The radio ID's low 26 bits are year and serial as one decimal number; its top 3 bits are the
+// diameter letter's low 3 bits (wmbusmeters driver_izar, read the other way round).
+function idFromSerial(text) {
+  const s = text.toUpperCase().replace(/[\s\-_./]/g, '');
+  const m = /^([A-Z])(\d{2})([A-Z])([A-Z])(\d{6})$/.exec(s);
+  if (!m) return { error: 'Expected one letter, two digits, two letters, six digits, e.g. H25XA036488.' };
+  const digits = Number(m[2] + m[5]);
+  if (digits > 0x03FFFFFF) return { error: `A year of ${m[2]} can't be right for this kind of meter.` };
+  const id = ((((m[4].charCodeAt(0) - 64) & 7) << 29) | digits) >>> 0;
+  return { id: '0x' + id.toString(16).toUpperCase().padStart(8, '0') };
+}
+
+const input = document.getElementById('serial');
+const msg = document.getElementById('msg');
+const result = document.getElementById('result');
+
+function update() {
+  const text = input.value.trim();
+  const r = text ? idFromSerial(text) : null;
+  result.hidden = !r || !r.id;
+  msg.className = r && r.error ? 'bad' : 'note';
+  msg.textContent = !r ? 'Spaces and dashes are fine.' : r.error || '';
+  if (r && r.id) {
+    document.getElementById('id').textContent = r.id;
+    document.getElementById('yaml').textContent =
+      `wmbus_meter:\n  - id: water_meter\n    meter_id: ${r.id}`;
+  }
+}
+
+input.addEventListener('input', update);
+document.getElementById('copy').addEventListener('click', async (e) => {
+  const id = document.getElementById('id').textContent;
+  try {
+    await navigator.clipboard.writeText(id);
+    e.target.textContent = 'Copied';
+    setTimeout(() => (e.target.textContent = 'Copy'), 1500);
+  } catch {
+    getSelection().selectAllChildren(document.getElementById('id'));
+  }
+});
+update();
+</script>
+</body>
+</html>

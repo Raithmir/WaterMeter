@@ -12,7 +12,7 @@ It's written for the **Diehl IZAR** radio module (IZAR RC 868 i W R4, a clip-on 
 
 There are two stages, each with its own firmware (the program that runs on the board):
 
-1. **Survey: find your meter's ID.** Every meter broadcasts an ID, and your neighbours' meters broadcast too. You take the board near your meter to find out which ID is yours. You don't need Home Assistant for this, and there's ready-made firmware you can install from your web browser.
+1. **Survey: find your meter's ID.** Every meter broadcasts an ID, and your neighbours' meters broadcast too. You take the board near your meter to find out which ID is yours. You don't need Home Assistant for this, and there's ready-made firmware you can install from your web browser. For Diehl IZAR meters there's a [shortcut](#shortcut-work-it-out-from-the-number-on-your-meter) that works out the ID from the number printed on the meter instead.
 2. **Gateway: read your meter permanently.** You put your meter's ID into the gateway config and install it on the board, then leave the board somewhere in range of the meter. It sends every reading to Home Assistant.
 
 The same board does both jobs: install the survey first, then replace it with the gateway.
@@ -38,7 +38,13 @@ Have a Seeed Wio Tracker L1 instead? It has its own survey firmware with a scree
 
 Your meter's ID is 8 characters long and uses the digits 0–9 and letters A–F, for example `2124589C`. The survey shows it with `0x` in front (`0x2124589C`), which is the form the gateway config needs.
 
-The ID is **not** the serial number printed on the meter, so you can't read it off the meter. You have to listen for it.
+### Shortcut: work it out from the number on your meter
+
+If your meter is a Diehl IZAR with a number like `H25XA036488` printed on it (one letter, two digits, two letters, six digits), type that number into the **[meter ID converter](https://raithmir.github.io/WaterMeter/meter-id/)**. On these meters the ID is the same number written a different way, so you can skip the survey and go straight to [Step 2](#step-2-set-up-the-gateway).
+
+If the gateway then never shows a reading, your meter stores its ID differently. Come back and do the survey below.
+
+For any other meter, the ID can't be read off the meter. You have to listen for it with the survey, as below.
 
 ### Install the survey firmware
 
@@ -133,14 +139,14 @@ In Home Assistant, go to Settings → Add-ons → Add-on store, install **ESPHom
    |---|---|
    | `YOUR_WIFI_SSID` | Your Wi-Fi network name |
    | `YOUR_WIFI_PASSWORD` | Your Wi-Fi password |
-   | `YOUR_METER_ID` | Your meter ID from the survey, **including the `0x`** |
+   | `YOUR_METER_ID` | Your meter ID from the survey or the converter, **including the `0x`** |
 
    For example:
 
    ```yaml
    wmbus_meter:
      - id: water_meter         # leave this line as it is
-       meter_id: 0x2124589C    # your ID, exactly as the survey showed it
+       meter_id: 0x2124589C    # your ID, exactly as the survey or converter showed it
    ```
 
    Put your real Wi-Fi details in the config. The gateway can also be set up from its `Water Meter Gateway Setup` Wi-Fi network, like the survey, but Wi-Fi details entered that way are forgotten whenever you update the gateway.
@@ -197,7 +203,7 @@ This builds the firmware, installs it (pick the USB port when asked), then shows
 | Board keeps switching off on a power bank | The power bank switches off at low power draw. Try a different power bank, your phone, or a LiPo battery. |
 | Survey finds no meters | Check the antenna is connected. Hold the board right next to the meter or its cover. The list only includes Diehl meters heard twice with a good signal. |
 | Can't open the web page | The board must be on the same Wi-Fi as your phone or computer. Try the board's IP address from your router instead of the `.local` address. |
-| Gateway runs but never shows a reading | Check `meter_id` has `0x` in front and matches the survey, and isn't the serial number from the meter. Check the gateway is in range. Compare the signal strength with the survey's. |
+| Gateway runs but never shows a reading | Check `meter_id` has `0x` in front and matches the survey or the converter, and isn't the number printed on the meter. If you used the converter, your meter may not be one it works for: do the survey. Check the gateway is in range. Compare the signal strength with the survey's. |
 | `Expected integer, but cannot parse ...` | `meter_id` is missing its `0x`. |
 | **Water Meter Stale** turns on | The gateway hasn't heard the meter for 6 hours. Move the gateway closer, and check the meter's battery life. |
 | XIAO receives nothing | Check the antenna is on the radio module's socket. |
