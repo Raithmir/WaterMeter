@@ -3,6 +3,9 @@
 Listens on 868.95 MHz for wM-Bus T1 and C1 telegrams, decodes Diehl IZAR readings and alarms, and keeps a table of every meter heard (any brand: ID, type, signal, position).
 The table (up to 512 meters) is saved to the 2 MB QSPI flash and house labels to the internal flash, so a survey can continue across walks. Each walk also adds one row per meter to `history.csv`, and meters whose reading can't be decoded get their raw telegram saved to `raw.csv`. Plugged into a computer, the tracker shows up as a USB drive with these files.
 
+<img width="3064" height="4080" alt="PXL_20260926_064548099" src="https://github.com/user-attachments/assets/662a8164-85dc-4df8-b418-35ad8acd4fa6" />
+<img width="3064" height="4080" alt="PXL_20260926_064600662" src="https://github.com/user-attachments/assets/59fe5693-1595-4612-be4a-9b03093528a0" />
+
 ## Build / flash
     pio run
 Double-tap reset → a USB drive appears → copy `.pio/build/wio_tracker_l1/firmware.uf2` onto it.
@@ -34,6 +37,9 @@ The top line shows the Bluetooth name (`WMBUS-` + 4 characters unique to the tra
 
 ## Bluetooth (phone page)
 The phone page is at **https://raithmir.github.io/WaterMeter/wio-wmbus-survey/web/** (source in `web/`). It works in Chrome on Android, or Chrome/Edge on a computer; iPhone Safari has no Web Bluetooth.
+
+<img width="1080" height="1964" alt="Screenshot_20260926-074930~2" src="https://github.com/user-attachments/assets/024a4c6b-246e-44da-b1d3-19bd870c7f35" />
+
 - Device view: the tracker's screen live on a photo of the tracker; tap around the joystick to push it, its middle to press, and the user button. Plain view: a big screen with arrow buttons
 - Log: what the tracker prints on serial, with a box for serial commands
 - Files: downloads `survey.csv`, `history.csv` and `raw.csv` without a cable. The tracker keeps listening while it does
