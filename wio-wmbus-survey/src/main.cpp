@@ -42,7 +42,7 @@ using Adafruit_LittleFS_Namespace::FILE_O_WRITE;
 #define LABEL_FILE "/labels.bin"
 #define FILE_VERSION_LABELS 2
 #define SETTINGS_FILE "/settings.bin"  // internal flash, saved LABEL_SAVE_MS after the last change
-#define FILE_VERSION_SETTINGS 1
+#define FILE_VERSION_SETTINGS 2  // 2 added show
 #define SURVEY_VERSION 3         // 3 added IZAR last-month/battery/period and log state.
                                  // Changing Meter (survey.h) means a new version AND a conversion in
                                  // loadSnapshot(), or the saved survey is dropped on upgrade.
@@ -139,7 +139,10 @@ bool hasKey(const Label &l) {
 
 Meter meters[MAX_METERS];
 int meterCount = 0;
-int order[MAX_METERS];
+int order[MAX_METERS];     // every meter, sorted (survey.csv, dumps)
+int view[MAX_METERS];      // the ones the list shows (Show setting), same order
+int viewCount = 0;
+int heardCount = 0;        // meters heard this session
 Label labels[MAX_LABELS];
 int labelCount = 0;
 int lastLabelNum = 0;  // starting point for labelling the next house
@@ -169,13 +172,21 @@ uint8_t raw[255];
 const uint32_t SCREEN_OFF_CHOICES[] = {30000, 60000, 120000, 300000, 0};  // 0 = never
 const char *const SCREEN_OFF_NAMES[] = {"30 s", "1 min", "2 min", "5 min", "never"};
 const int N_SCREEN_OFF = sizeof(SCREEN_OFF_CHOICES) / sizeof(SCREEN_OFF_CHOICES[0]);
+enum { SHOW_ALL, SHOW_NOT_HEARD, SHOW_UNLABELLED, N_SHOW };
+const char *const SHOW_NAMES[] = {"all", "not heard", "unlabelled"};
+struct SettingsV1 {
+  bool ble, gps;
+  uint8_t screenOff;
+  bool beeps, sortByRssi;
+};
 struct Settings {
   bool ble;           // Bluetooth link to the phone page
   bool gps;           // off = GPS module in standby (saves power, no positions)
   uint8_t screenOff;  // index into SCREEN_OFF_CHOICES
   bool beeps;
   bool sortByRssi;    // also toggled by the user button
-} settings = {false, true, 2, true, true};
+  uint8_t show;       // SHOW_*: which meters the list shows
+} settings = {false, true, 2, true, true, SHOW_ALL};
 bool settingsDirty = false;
 uint32_t lastSettingsEdit = 0;
 
@@ -620,8 +631,12 @@ void saveSettings() {
 // Defaults stay if there is no file (or one from another settings version).
 void loadSettings() {
   Settings s;
+  SettingsV1 o;
   if (loadFile(SETTINGS_FILE, MAGIC_SETTINGS, FILE_VERSION_SETTINGS, &s, sizeof(s), 1) == 1) settings = s;
+  else if (loadFile(SETTINGS_FILE, MAGIC_SETTINGS, 1, &o, sizeof(o), 1) == 1)
+    settings = {o.ble, o.gps, o.screenOff, o.beeps, o.sortByRssi, SHOW_ALL};
   if (settings.screenOff >= N_SCREEN_OFF) settings.screenOff = 2;
+  if (settings.show >= N_SHOW) settings.show = SHOW_ALL;
 }
 
 void fsInit() {
@@ -769,15 +784,26 @@ void sortMeters() {
     }
     order[j + 1] = k;
   }
+  // The list shows what the Show setting picks, plus the selected meter, so it doesn't vanish
+  // from under you the moment it's heard or labelled.
+  viewCount = heardCount = 0;
+  for (int i = 0; i < meterCount; i++) {
+    const Meter &m = meters[order[i]];
+    if (m.thisSession) heardCount++;
+    bool show = settings.show == SHOW_NOT_HEARD    ? !m.thisSession
+                : settings.show == SHOW_UNLABELLED ? !getLabel(m.id)
+                                                   : true;
+    if (show || m.id == selId) view[viewCount++] = order[i];
+  }
   // keep the same meter selected
   int found = -1;
-  for (int i = 0; i < meterCount; i++)
-    if (meters[order[i]].id == selId) { found = i; break; }
+  for (int i = 0; i < viewCount; i++)
+    if (meters[view[i]].id == selId) { found = i; break; }
   if (found >= 0) {
     sel = found;
   } else {
-    if (sel >= meterCount) sel = meterCount ? meterCount - 1 : 0;
-    selId = meterCount ? meters[order[sel]].id : 0;
+    if (sel >= viewCount) sel = viewCount ? viewCount - 1 : 0;
+    selId = viewCount ? meters[view[sel]].id : 0;
   }
 }
 
@@ -1309,12 +1335,16 @@ void bleLoop() {
 
 // ---------- UI ----------
 void drawList() {
-  char line[32];
+  char line[48];
   // frame counters are on the diagnostics screen
   char sats[8] = "S-";  // GPS off
   if (settings.gps) snprintf(sats, sizeof(sats), "S%lu", (unsigned long)gps.satellites.value());
-  snprintf(line, sizeof(line), "N%d  %s  %.2fV%s%s", meterCount, sats, battV, battLow ? " LOW" : "",
-           bleLinked() ? " BT" : "");
+  // heard this session / in the table; with a Show filter, how many meters it leaves
+  char count[12];
+  if (settings.show == SHOW_NOT_HEARD) snprintf(count, sizeof(count), "%d left", meterCount - heardCount);
+  else if (settings.show == SHOW_UNLABELLED) snprintf(count, sizeof(count), "%d unlab", viewCount);
+  else snprintf(count, sizeof(count), "%d/%d", heardCount, meterCount);
+  snprintf(line, sizeof(line), "%s %s %.2fV%s%s", count, sats, battV, battLow ? " LOW" : "", bleLinked() ? " BT" : "");
   oled.drawStr(0, 7, line);
   oled.drawHLine(0, 9, 128);
 
@@ -1325,11 +1355,17 @@ void drawList() {
     if (!qspiOk) oled.drawStr(0, 54, "QSPI error: small survey");
     return;
   }
+  if (viewCount == 0) {
+    snprintf(line, sizeof(line), "show: %s", SHOW_NAMES[settings.show]);
+    oled.drawStr(0, 24, line);
+    oled.drawStr(0, 34, settings.show == SHOW_NOT_HEARD ? "all heard" : "none left");
+    return;
+  }
   if (sel < top) top = sel;
   if (sel >= top + ROWS) top = sel - ROWS + 1;
 
-  for (int r = 0; r < ROWS && top + r < meterCount; r++) {
-    const Meter &m = meters[order[top + r]];
+  for (int r = 0; r < ROWS && top + r < viewCount; r++) {
+    const Meter &m = meters[view[top + r]];
     char name[10], val[12];
     const char *lbl = getLabel(m.id);
     if (lbl) snprintf(name, sizeof(name), "#%-7.7s", lbl);
@@ -1360,7 +1396,7 @@ void drawList() {
 }
 
 void drawDetail() {
-  const Meter &m = meters[order[sel]];
+  const Meter &m = meters[view[sel]];
   char line[32];
   const char *lbl = getLabel(m.id);
   if (lbl) snprintf(line, sizeof(line), "%08lx  House %s", (unsigned long)m.id, lbl);
@@ -1445,16 +1481,18 @@ void drawDiag() {
   oled.drawStr(0, 63, line);
 }
 
-enum { SET_BT, SET_GPS, SET_SCREEN, SET_BEEPS, SET_SORT, SET_FORGET, N_SETTINGS };
+enum { SET_BT, SET_GPS, SET_SCREEN, SET_BEEPS, SET_SORT, SET_SHOW, SET_FORGET, N_SETTINGS };
 bool settingsOpen = false;
-int setSel = 0;
+int setSel = 0, setTop = 0;
 
 void drawSettings() {
   char line[32];
   snprintf(line, sizeof(line), "Settings  %s", bleName);
   oled.drawStr(0, 7, line);
   oled.drawHLine(0, 9, 128);
-  for (int i = 0; i < N_SETTINGS; i++) {
+  if (setSel < setTop) setTop = setSel;
+  if (setSel >= setTop + ROWS) setTop = setSel - ROWS + 1;
+  for (int i = setTop; i < N_SETTINGS && i < setTop + ROWS; i++) {
     const char *name = "", *val = "";
     switch (i) {
       case SET_BT: name = "Bluetooth"; val = !settings.ble ? "off" : bleLinked() ? "linked" : "on"; break;
@@ -1462,10 +1500,11 @@ void drawSettings() {
       case SET_SCREEN: name = "Screen off"; val = SCREEN_OFF_NAMES[settings.screenOff]; break;
       case SET_BEEPS: name = "Beeps"; val = settings.beeps ? "on" : "off"; break;
       case SET_SORT: name = "Sort"; val = settings.sortByRssi ? "RSSI" : "last seen"; break;
+      case SET_SHOW: name = "Show"; val = SHOW_NAMES[settings.show]; break;
       case SET_FORGET: name = "Forget phones"; val = forgotAt && millis() - forgotAt < 3000 ? "done" : "press"; break;
     }
     snprintf(line, sizeof(line), "%-14s%10s", name, val);
-    int y = 18 + i * 9;
+    int y = 18 + (i - setTop) * 9;
     if (i == setSel) {
       oled.drawBox(0, y - 7, 128, 9);
       oled.setDrawColor(0);
@@ -1494,7 +1533,7 @@ void drawScreen() {
   if (pairShown) drawPairing();
   else if (settingsOpen) drawSettings();
   else if (diag) drawDiag();
-  else if (detail && meterCount > 0) drawDetail();
+  else if (detail && viewCount > 0) drawDetail();
   else drawList();
   if (screenOn) oled.sendBuffer();
 }
@@ -1558,6 +1597,10 @@ void changeSetting(int i) {
       settings.sortByRssi = !settings.sortByRssi;
       sortMeters();
       break;
+    case SET_SHOW:
+      settings.show = (settings.show + 1) % N_SHOW;
+      sortMeters();
+      break;
     case SET_FORGET:
       // Cleared by bleLoop once the link is down: a disconnect still writes to the phone's bond.
       if (!bleBegun) return;
@@ -1611,10 +1654,12 @@ void handleButtons() {
   } else if (diag) {
     if (lrOnce || press) diag = false;
   } else {
-    if (up && sel > 0) selId = meters[order[--sel]].id;
-    if (down && sel < meterCount - 1) selId = meters[order[++sel]].id;
-    if (detail && meterCount > 0) {
-      if (l || r) stepLabel(meters[order[sel]].id, r ? 1 : -1);
+    if ((up && sel > 0) || (down && sel < viewCount - 1)) {
+      selId = meters[view[up ? --sel : ++sel]].id;
+      sortMeters();  // a meter the Show filter only kept while selected drops out now
+    }
+    if (detail && viewCount > 0) {
+      if (l || r) stepLabel(meters[view[sel]].id, r ? 1 : -1);
     } else if (lOnce) {
       settingsOpen = true;
     } else if (rOnce) {
@@ -1647,6 +1692,7 @@ void runCommand(char *c, bool fromBle = false) {
     meterCount = 0;
     sel = top = 0;
     selId = 0;
+    sortMeters();
     okCount = errCount = 0;
     surveyDirty = true;
     lastSurveySave = 0;
@@ -1685,9 +1731,9 @@ void runCommand(char *c, bool fromBle = false) {
                   (unsigned long)gps.failedChecksum(), (unsigned long)gps.satellites.value(),
                   gps.location.isValid() ? "yes" : "no", gpsTimeTrusted ? "trusted" : "not yet");
     con.printf("gps fix age %lu ms, hdop %.1f\n", (unsigned long)gps.location.age(), gps.hdop.hdop());
-    con.printf("bluetooth %s %s, gps %s, screen off %s, beeps %s\n", bleName,
+    con.printf("bluetooth %s %s, gps %s, screen off %s, beeps %s, show %s\n", bleName,
                !settings.ble ? "off" : bleLinked() ? "linked" : "advertising", settings.gps ? "on" : "off",
-               SCREEN_OFF_NAMES[settings.screenOff], settings.beeps ? "on" : "off");
+               SCREEN_OFF_NAMES[settings.screenOff], settings.beeps ? "on" : "off", SHOW_NAMES[settings.show]);
     con.println("# end");
   } else if (!strcmp(c, "h")) {
     printLog(historyLog);

@@ -26,12 +26,13 @@ Back to Meshtastic any time via https://flasher.meshtastic.org
 - Beeps: three short = meter newly reporting a leak; two low = battery below 3.5 V
 
 ## Settings
-Up/down picks a setting, press changes it (screen off steps through its choices), right goes back. Saved to the internal flash a few seconds after the last change.
+Up/down picks a setting (the list scrolls), press changes it (screen off steps through its choices), right goes back. Saved to the internal flash a few seconds after the last change.
 - Bluetooth (default off): lets a phone connect, see below. `linked` = a phone is connected
 - GPS: off puts the GPS module in standby, which saves power (e.g. when leaving the tracker by your own meter). No positions are recorded then. Times keep running from the last GPS time, if there was one since power-on
 - Screen off: 30 s, 1 min, 2 min, 5 min or never
 - Beeps: leak, low battery and start-up beeps
 - Sort: same as the user button
+- Show: which meters the list shows: all, not heard (since power-on: what's left of the walk) or unlabelled. The selected meter stays in the list until you move off it, so it doesn't vanish the moment it's heard or labelled
 - Forget phones: removes every paired phone (Bluetooth must be on). Pair again from the page afterwards
 
 The top line shows the Bluetooth name (`WMBUS-` + 4 characters unique to the tracker).
@@ -52,7 +53,7 @@ The phone page is at **https://raithmir.github.io/WaterMeter/wio-wmbus-survey/we
 With a phone watching, the screen is kept up to date for it even while the tracker's own screen is off, and buttons pressed on the page don't turn the tracker's screen on. The link needs the pairing code, so nobody else nearby can connect. The console uses the standard Nordic UART service, so BLE serial terminal apps (e.g. nRF Toolbox, Serial Bluetooth Terminal) work too once paired.
 
 ## List view
-Top line: `N48  S9  3.92V` = meters in the table, GPS satellites in view (`S-` = GPS switched off), battery (`LOW` below 3.5 V), `BT` while a phone is connected.
+Top line: `41/48 S9 3.92V` = meters heard since power-on / meters in the table (with Show set to not heard: `7 left`; unlabelled: `5 unlab`), GPS satellites in view (`S-` = GPS switched off), battery (`LOW` below 3.5 V), `BT` while a phone is connected.
 
 `#12     L   12.345  -71*`
 - Label (or meter ID if unlabelled)
