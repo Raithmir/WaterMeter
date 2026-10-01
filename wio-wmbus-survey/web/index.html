@@ -281,7 +281,11 @@ function onConsole(e) {
 
 function onLine(line) {
   if (download && download.name === null) {
-    if (line.startsWith('# file ')) { download.name = line.slice(7); return; }
+    if (line.startsWith('# file ')) {
+      clearTimeout(download.timer);
+      download.name = line.slice(7);
+      return;
+    }
     log(line);  // queued before the download started
     return;
   }
@@ -330,10 +334,14 @@ function addLeaflet() {
   const css = document.createElement('link');
   css.rel = 'stylesheet';
   css.href = base + 'leaflet.min.css';
+  css.integrity = 'sha512-h9FcoyWjHcOcmEVkxOfTLnmZFWIH0iZhZT1H2TbOq55xssQGEJHEaIm+PgoUaZbRvQTNTluNOEfb1ZRy6D3BOw==';
+  css.crossOrigin = 'anonymous';
   document.head.append(css);
   return new Promise((ok, fail) => {
     const js = document.createElement('script');
     js.src = base + 'leaflet.min.js';
+    js.integrity = 'sha512-puJW3E/qXDqYp9IfhAI54BJEaWIfloJ7JWs7OeD5i6ruC9JZL1gERT1wjtwXFlh7CjE7ZJ+/vcRZRkIYIb6p4g==';
+    js.crossOrigin = 'anonymous';
     js.onload = ok;
     js.onerror = () => fail(new Error("couldn't load the map library (offline?)"));
     document.head.append(js);
@@ -463,7 +471,7 @@ function showUse(text) {
   const ids = [...useMeters.keys()].filter((id) => useMeters.get(id).walks.length > 1);
   const name = (id) => (useMeters.get(id).label ? 'House ' + useMeters.get(id).label : id);
   ids.sort((a, b) => name(a).localeCompare(name(b), undefined, { numeric: true }));
-  sel.innerHTML = ids.map((id) => `<option value="${id}">${esc(name(id))}` +
+  sel.innerHTML = ids.map((id) => `<option value="${esc(id)}">${esc(name(id))}` +
     (useMeters.get(id).label ? ` (${id})` : '') + '</option>').join('');
   if (ids.includes(prev)) sel.value = prev;
   sel.hidden = !ids.length;
@@ -738,13 +746,26 @@ document.querySelectorAll('[data-cmd]').forEach((b) => b.addEventListener('click
   sendCmd(b.dataset.cmd);
 }));
 $('#clearlog').addEventListener('click', () => { lines = []; logEl.textContent = ''; });
+// Asks the tracker for a file. A build without that command only prints its help, so give up
+// if the file hasn't started within a few seconds rather than wait for ever.
+function startDownload(cmd, into, statusEl, text) {
+  if (download) return;
+  const d = { name: null, parts: [], bytes: 0, failed: false, into };
+  d.timer = setTimeout(() => {
+    if (download !== d || d.name !== null) return;
+    download = null;
+    setFileButtons(true);
+    $(statusEl).textContent = "The tracker didn't send it: update its firmware?";
+  }, 5000);
+  download = d;
+  setFileButtons(false);
+  $(statusEl).textContent = text;
+  sendCmd(cmd);
+}
+
 // A file from the tracker shown on the page instead of saved.
 function loadInto(cmd, into, what) {
-  if (download) return;
-  download = { name: null, parts: [], bytes: 0, failed: false, into };
-  setFileButtons(false);
-  $(into.status).textContent = `loading ${what} from the tracker…`;
-  sendCmd(cmd);
+  startDownload(cmd, into, into.status, `loading ${what} from the tracker…`);
 }
 $('#maptracker').addEventListener('click', () => loadInto('d', {
   status: '#mapstatus',
@@ -776,11 +797,7 @@ $('#mapfile').addEventListener('change', async (e) => {
   e.target.value = '';
 });
 document.querySelectorAll('[data-dl]').forEach((b) => b.addEventListener('click', () => {
-  if (download) return;
-  download = { name: null, parts: [], bytes: 0, failed: false };
-  setFileButtons(false);
-  $('#dlstatus').textContent = 'starting…';
-  sendCmd(b.dataset.dl);
+  startDownload(b.dataset.dl, null, '#dlstatus', 'starting…');
 }));
 
 if (!navigator.bluetooth) {

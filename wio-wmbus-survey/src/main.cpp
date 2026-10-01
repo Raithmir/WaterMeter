@@ -144,6 +144,7 @@ int meterCount = 0;
 int order[MAX_METERS];     // every meter, sorted (survey.csv, dumps)
 int view[MAX_METERS];      // the ones the list shows (Show setting), same order
 int viewCount = 0;
+int matchCount = 0;        // meters the Show setting picks (view can hold the selected one too)
 int heardCount = 0;        // meters heard this session
 Label labels[MAX_LABELS];
 int labelCount = 0;
@@ -820,13 +821,14 @@ void sortMeters() {
   }
   // The list shows what the Show setting picks, plus the selected meter, so it doesn't vanish
   // from under you the moment it's heard or labelled.
-  viewCount = heardCount = 0;
+  viewCount = matchCount = heardCount = 0;
   for (int i = 0; i < meterCount; i++) {
     const Meter &m = meters[order[i]];
     if (m.thisSession) heardCount++;
     bool show = settings.show == SHOW_NOT_HEARD    ? !m.thisSession
                 : settings.show == SHOW_UNLABELLED ? !getLabel(m.id)
                                                    : true;
+    if (show) matchCount++;
     if (show || m.id == selId) view[viewCount++] = order[i];
   }
   // keep the same meter selected
@@ -1403,7 +1405,7 @@ void drawList() {
   // heard this session / in the table; with a Show filter, how many meters it leaves
   char count[12];
   if (settings.show == SHOW_NOT_HEARD) snprintf(count, sizeof(count), "%d left", meterCount - heardCount);
-  else if (settings.show == SHOW_UNLABELLED) snprintf(count, sizeof(count), "%d unlab", viewCount);
+  else if (settings.show == SHOW_UNLABELLED) snprintf(count, sizeof(count), "%d unlab", matchCount);
   else snprintf(count, sizeof(count), "%d/%d", heardCount, meterCount);
   snprintf(line, sizeof(line), "%s %s %.2fV%s%s", count, sats, battV, battLow ? " LOW" : "", bleLinked() ? " BT" : "");
   oled.drawStr(0, 7, line);
@@ -1780,7 +1782,7 @@ void handleButtons() {
       hunt = false;
     }
   }
-  if (user && detail && !settingsOpen && !diag) {  // detail view: hunt page on/off
+  if (user && detail && viewCount > 0 && !settingsOpen && !diag) {  // detail view: hunt page on/off
     hunt = !hunt;
     huntPeak = -200;
   } else if (user) {
