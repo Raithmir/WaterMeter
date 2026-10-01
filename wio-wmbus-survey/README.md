@@ -21,7 +21,8 @@ Back to Meshtastic any time via https://flasher.meshtastic.org
 - Detail view, second line: for IZAR meters made by Sappel (manufacturer `SAP`), the number printed on the meter, e.g. `H25XA036488`, so you can check you're labelling the right one. Other meters show manufacturer and radio mode there.
 - Joystick left (list view): settings screen (see below; right goes back)
 - Joystick right (list view): diagnostics screen (any of left/right/press goes back)
-- User button: sort by RSSI / last seen. Either way, meters heard since power-on come first; RSSI sorts those by their latest signal (so the list follows you as you walk) and the rest by their saved best.
+- User button (detail view): hunt page on/off, see below
+- User button (list view): sort by RSSI / last seen. Either way, meters heard since power-on come first; RSSI sorts those by their latest signal (so the list follows you as you walk) and the rest by their saved best.
 - Screen turns off after 2 minutes without a button press (changeable in settings); the next press only wakes it. A new leak or low battery wakes it too.
 - Beeps: three short = meter newly reporting a leak; two low = battery below 3.5 V
 
@@ -33,6 +34,7 @@ Up/down picks a setting (the list scrolls), press changes it (screen off steps t
 - Beeps: leak, low battery and start-up beeps
 - Sort: same as the user button
 - Show: which meters the list shows: all, not heard (since power-on: what's left of the walk) or unlabelled. The selected meter stays in the list until you move off it, so it doesn't vanish the moment it's heard or labelled
+- Hunt beep (default on): the hunt page beeps for each telegram from its meter, higher the stronger the signal. Beeps off silences it too
 - Forget phones: removes every paired phone (Bluetooth must be on). Pair again from the page afterwards
 
 The top line shows the Bluetooth name (`WMBUS-` + 4 characters unique to the tracker).
@@ -60,6 +62,17 @@ Top line: `41/48 S9 3.92V` = meters heard since power-on / meters in the table (
 - Flag: `L` leaking now, `l` leaked previously, `!` other alarm
 - Reading in m³, or manufacturer + device type (e.g. `KAM cold`) for meters whose reading isn't decoded
 - Last RSSI (the detail view also shows the best); `*` = not heard since power-on (values from the saved survey)
+
+## Hunt page
+For finding which house a meter belongs to. From a meter's detail view, press the user button:
+
+    217e06c8  House 12
+         -64 dBm
+    [██████████|░░░░░]
+    peak -58  x14
+    seen 2s ago
+
+The big number and bar are the latest telegram's RSSI (bar from -110 to -40 dBm). The tick and `peak` are the strongest since you opened the page, so you can walk past and come back to where it peaked. Each telegram also beeps (Hunt beep setting), higher the stronger. `(lost?)` after the time = no telegram for over twice the meter's broadcast interval (IZAR meters say what that is). Up/down hunts the next meter, left/right still labels, the user button goes back to the details and press to the list.
 
 ## Diagnostics screen
 Frames decoded ok / failed (`err` always climbs a little: noise matching the sync word), GPS satellites and fix, battery, whether a computer has the USB drive, QSPI flash and save ring, snapshot count and labels, log bytes waiting to be appended, uptime. The serial `s` command shows the same and more.

@@ -42,7 +42,7 @@ using Adafruit_LittleFS_Namespace::FILE_O_WRITE;
 #define LABEL_FILE "/labels.bin"
 #define FILE_VERSION_LABELS 2
 #define SETTINGS_FILE "/settings.bin"  // internal flash, saved LABEL_SAVE_MS after the last change
-#define FILE_VERSION_SETTINGS 2  // 2 added show
+#define FILE_VERSION_SETTINGS 2  // 2 added show, huntBeep
 #define SURVEY_VERSION 3         // 3 added IZAR last-month/battery/period and log state.
                                  // Changing Meter (survey.h) means a new version AND a conversion in
                                  // loadSnapshot(), or the saved survey is dropped on upgrade.
@@ -150,6 +150,8 @@ int lastLabelNum = 0;  // starting point for labelling the next house
 int sel = 0, top = 0;
 uint32_t selId = 0;  // selection follows the meter, not the row, when the list re-sorts
 bool detail = false;
+bool hunt = false;        // detail view's hunt page (user button): the signal, big
+int16_t huntPeak = -200;  // strongest telegram from the hunted meter since the page opened
 bool diag = false;      // diagnostics screen (joystick left/right from the list)
 bool screenOn = true;
 uint32_t lastInput = 0;  // last button press, for the screen timeout
@@ -186,7 +188,8 @@ struct Settings {
   bool beeps;
   bool sortByRssi;    // also toggled by the user button
   uint8_t show;       // SHOW_*: which meters the list shows
-} settings = {false, true, 2, true, true, SHOW_ALL};
+  bool huntBeep;      // hunt page beeps each telegram, pitch rising with the signal
+} settings = {false, true, 2, true, true, SHOW_ALL, true};
 bool settingsDirty = false;
 uint32_t lastSettingsEdit = 0;
 
@@ -213,6 +216,9 @@ float batteryVolts() { return analogRead(PIN_VBAT) * AREF_VOLTAGE / 4095.0f * AD
 void beep(uint16_t freq, uint16_t ms) {
   if (settings.beeps) tone(PIN_BUZZER, freq, ms);
 }
+
+// Hunt page beep: 400 Hz at -110 dBm up to 3 kHz at -40, so you can walk without looking.
+uint16_t huntPitch(int16_t rssi) { return 400 + constrain(rssi + 110, 0, 70) * 2600 / 70; }
 
 // Beep sequences play from loop(), so the radio keeps being serviced while they sound
 // (tone() itself doesn't block).
@@ -443,6 +449,7 @@ int readSurvey(F &f) {
 
 void printCsvHeader(Print &out);
 void sortMeters();
+void drawScreen();
 void printMeterCsv(Print &out, const Meter &m);
 
 // ---------- history / raw logs ----------
@@ -634,7 +641,7 @@ void loadSettings() {
   SettingsV1 o;
   if (loadFile(SETTINGS_FILE, MAGIC_SETTINGS, FILE_VERSION_SETTINGS, &s, sizeof(s), 1) == 1) settings = s;
   else if (loadFile(SETTINGS_FILE, MAGIC_SETTINGS, 1, &o, sizeof(o), 1) == 1)
-    settings = {o.ble, o.gps, o.screenOff, o.beeps, o.sortByRssi, SHOW_ALL};
+    settings = {o.ble, o.gps, o.screenOff, o.beeps, o.sortByRssi, SHOW_ALL, true};
   if (settings.screenOff >= N_SCREEN_OFF) settings.screenOff = 2;
   if (settings.show >= N_SHOW) settings.show = SHOW_ALL;
 }
@@ -962,11 +969,17 @@ void handlePacket() {
     surveyDirty = true;
 
   if (Serial.availableForWrite() >= 64) printMeterCsv(Serial, m);  // a stalled terminal mustn't block the loop
+  bool hunted = detail && hunt && m.id == selId;
+  if (hunted) {
+    if (rssi > huntPeak) huntPeak = rssi;
+    if (settings.huntBeep && !beepSeq.left) beep(huntPitch(rssi), 60);
+  }
   if (newLeak) {
     beepRepeat(3, 3200, 120, 60);
     wakeScreen();
   }
   sortMeters();
+  if (hunted) drawScreen();
 }
 
 // ---------- bluetooth ----------
@@ -1457,6 +1470,45 @@ void drawDetail() {
   oled.drawStr(0, 62, line);
 }
 
+// Hunt page: the selected meter's latest signal, big, to walk towards it. The bar runs from
+// HUNT_MIN to HUNT_MAX dBm; the tick is the strongest telegram since the page was opened.
+#define HUNT_MIN -110
+#define HUNT_MAX -40
+int huntX(int16_t rssi) { return constrain((rssi - HUNT_MIN) * 127 / (HUNT_MAX - HUNT_MIN), 0, 127); }
+
+void drawHunt() {
+  const Meter &m = meters[view[sel]];
+  char line[32];
+  const char *lbl = getLabel(m.id);
+  if (lbl) snprintf(line, sizeof(line), "%08lx  House %s", (unsigned long)m.id, lbl);
+  else snprintf(line, sizeof(line), "%08lx  <> to label", (unsigned long)m.id);
+  oled.drawStr(0, 7, line);
+  oled.drawHLine(0, 9, 128);
+
+  if (!m.thisSession) {
+    oled.drawStr(0, 30, "not heard yet");
+    oled.drawStr(0, 48, "walk on...");
+    return;
+  }
+  snprintf(line, sizeof(line), "%d", m.lastRssi);
+  oled.setFont(u8g2_font_10x20_tn);
+  oled.drawStr(30, 31, line);
+  oled.setFont(u8g2_font_5x8_tf);
+  oled.drawStr(74, 31, "dBm");
+
+  oled.drawFrame(0, 36, 128, 9);
+  oled.drawBox(0, 36, huntX(m.lastRssi) + 1, 9);
+  if (huntPeak > -200) oled.drawVLine(huntX(huntPeak), 34, 13);
+
+  uint32_t ago = (millis() - m.lastSeen) / 1000;
+  snprintf(line, sizeof(line), "peak %d  x%u", huntPeak > -200 ? huntPeak : m.lastRssi, m.count);
+  oled.drawStr(0, 54, line);
+  // a reading this old no longer says where you are
+  snprintf(line, sizeof(line), "seen %lus ago%s", (unsigned long)ago,
+           m.periodS && ago > 2 * m.periodS ? "  (lost?)" : "");
+  oled.drawStr(0, 63, line);
+}
+
 // Everything the serial 's' command covers, for checking without a computer. Lines fit 25 chars.
 void drawDiag() {
   char line[32];
@@ -1481,7 +1533,7 @@ void drawDiag() {
   oled.drawStr(0, 63, line);
 }
 
-enum { SET_BT, SET_GPS, SET_SCREEN, SET_BEEPS, SET_SORT, SET_SHOW, SET_FORGET, N_SETTINGS };
+enum { SET_BT, SET_GPS, SET_SCREEN, SET_BEEPS, SET_SORT, SET_SHOW, SET_HUNT_BEEP, SET_FORGET, N_SETTINGS };
 bool settingsOpen = false;
 int setSel = 0, setTop = 0;
 
@@ -1501,6 +1553,7 @@ void drawSettings() {
       case SET_BEEPS: name = "Beeps"; val = settings.beeps ? "on" : "off"; break;
       case SET_SORT: name = "Sort"; val = settings.sortByRssi ? "RSSI" : "last seen"; break;
       case SET_SHOW: name = "Show"; val = SHOW_NAMES[settings.show]; break;
+      case SET_HUNT_BEEP: name = "Hunt beep"; val = settings.huntBeep ? "on" : "off"; break;
       case SET_FORGET: name = "Forget phones"; val = forgotAt && millis() - forgotAt < 3000 ? "done" : "press"; break;
     }
     snprintf(line, sizeof(line), "%-14s%10s", name, val);
@@ -1533,7 +1586,7 @@ void drawScreen() {
   if (pairShown) drawPairing();
   else if (settingsOpen) drawSettings();
   else if (diag) drawDiag();
-  else if (detail && viewCount > 0) drawDetail();
+  else if (detail && viewCount > 0) hunt ? drawHunt() : drawDetail();
   else drawList();
   if (screenOn) oled.sendBuffer();
 }
@@ -1593,6 +1646,7 @@ void changeSetting(int i) {
       settings.screenOff = (settings.screenOff + 1) % N_SCREEN_OFF;
       break;
     case SET_BEEPS: settings.beeps = !settings.beeps; break;
+    case SET_HUNT_BEEP: settings.huntBeep = !settings.huntBeep; break;
     case SET_SORT:
       settings.sortByRssi = !settings.sortByRssi;
       sortMeters();
@@ -1656,6 +1710,7 @@ void handleButtons() {
   } else {
     if ((up && sel > 0) || (down && sel < viewCount - 1)) {
       selId = meters[view[up ? --sel : ++sel]].id;
+      huntPeak = -200;
       sortMeters();  // a meter the Show filter only kept while selected drops out now
     }
     if (detail && viewCount > 0) {
@@ -1665,9 +1720,15 @@ void handleButtons() {
     } else if (rOnce) {
       diag = true;
     }
-    if (press) detail = !detail;
+    if (press) {
+      detail = !detail;
+      hunt = false;
+    }
   }
-  if (user) {
+  if (user && detail && !settingsOpen && !diag) {  // detail view: hunt page on/off
+    hunt = !hunt;
+    huntPeak = -200;
+  } else if (user) {
     settings.sortByRssi = !settings.sortByRssi;
     sortMeters();
     settingsChanged();
@@ -1734,6 +1795,7 @@ void runCommand(char *c, bool fromBle = false) {
     con.printf("bluetooth %s %s, gps %s, screen off %s, beeps %s, show %s\n", bleName,
                !settings.ble ? "off" : bleLinked() ? "linked" : "advertising", settings.gps ? "on" : "off",
                SCREEN_OFF_NAMES[settings.screenOff], settings.beeps ? "on" : "off", SHOW_NAMES[settings.show]);
+    con.printf("hunt beep %s\n", settings.huntBeep ? "on" : "off");
     con.println("# end");
   } else if (!strcmp(c, "h")) {
     printLog(historyLog);
