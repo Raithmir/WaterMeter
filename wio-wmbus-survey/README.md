@@ -48,6 +48,7 @@ The phone page is at **https://raithmir.github.io/WaterMeter/wio-wmbus-survey/we
 - Log: what the tracker prints on serial, with a box for serial commands
 - Files: downloads `survey.csv`, `history.csv` and `raw.csv` without a cable. The tracker keeps listening while it does
 - Map: every meter at its estimated position on OpenStreetMap, coloured by leak/alarm/labelled (Status) or litres per day since the last walk (Use), with a circle for its spread; tap one for its house, serial, reading, use, alarms and signal. "From tracker" loads the survey over Bluetooth; "Open survey.csv" takes the file from the USB drive and needs no Bluetooth (so any browser works, iPhone too). The map itself needs internet
+- Usage: one meter's litres per day between walks, as a bar chart (tap a bar for its dates and litres) and a table of readings, with the average over all of them. Loads `history.csv` from the tracker or from a file, like the map. Rows within 6 hours count as one walk
 
 1. Settings → Bluetooth → on
 2. Open [the page](https://raithmir.github.io/WaterMeter/wio-wmbus-survey/web/), press Connect and pick `WMBUS-xxxx`

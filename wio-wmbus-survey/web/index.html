@@ -94,6 +94,18 @@
   .leaflet-popup-content { font-size: 13px; line-height: 1.4; }
   .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-top: 8px; }
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
+  select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; margin-top: 10px; width: 100%; }
+  .usesum { margin: 10px 0 0; font-size: 14px; }
+  .usesum b { font-size: 20px; }
+  .chart { position: relative; margin-top: 8px; }
+  .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .chart .tip { position: absolute; pointer-events: none; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 8px; font-size: 12px; white-space: nowrap; transform: translate(-50%, -100%); }
+  .usetable { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .usetable th { color: var(--muted); font-weight: normal; text-align: right; padding: 3px 4px; border-bottom: 1px solid var(--line); }
+  .usetable td { text-align: right; padding: 3px 4px; }
+  .usetable th:first-child, .usetable td:first-child { text-align: left; }
   label.button { display: inline-block; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
     border-radius: 8px; padding: 9px 14px; cursor: pointer; }
 </style>
@@ -146,6 +158,7 @@
   <button role="tab" aria-selected="true" data-tab="logtab">Log</button>
   <button role="tab" aria-selected="false" data-tab="filestab">Files</button>
   <button role="tab" aria-selected="false" data-tab="maptab">Map</button>
+  <button role="tab" aria-selected="false" data-tab="usetab">Usage</button>
 </div>
 <section id="logtab" class="tab">
   <pre id="log"></pre>
@@ -182,6 +195,19 @@
   <p class="note" id="mapstatus">Each meter at its estimated position; the circle is its spread (how far apart
     the receptions it's worked out from were). Tap one for details. "Open survey.csv" works without Bluetooth,
     e.g. with the file copied off the tracker's USB drive.</p>
+</section>
+
+<section id="usetab" class="tab" hidden>
+  <div class="row">
+    <button id="usetracker">From tracker</button>
+    <label class="button">Open history.csv<input type="file" id="usefile" accept=".csv,text/csv" hidden></label>
+  </div>
+  <select id="usemeter" aria-label="Meter" hidden></select>
+  <p class="usesum" id="usesum"></p>
+  <div class="chart" id="usechart"></div>
+  <table class="usetable" id="usetable"></table>
+  <p class="note" id="usestatus">Litres per day between walks for one meter, from history.csv. Tap a bar for
+    its numbers.</p>
 </section>
 
 <script>
@@ -264,7 +290,7 @@ function onLine(line) {
     if (line === '# read failed') { download.failed = true; return; }
     download.parts.push(line + '\n');
     download.bytes += line.length + 1;
-    $(download.toMap ? '#mapstatus' : '#dlstatus').textContent = `${download.name}: ${(download.bytes / 1024).toFixed(1)} KB`;
+    $(download.into ? download.into.status : '#dlstatus').textContent = `${download.name}: ${(download.bytes / 1024).toFixed(1)} KB`;
     return;
   }
   log(line);
@@ -274,8 +300,8 @@ function finishDownload() {
   const d = download;
   download = null;
   setFileButtons(true);
-  if (d.toMap) {
-    showMap(d.parts.join(''));
+  if (d.into) {
+    d.into.show(d.parts.join(''));
     return;
   }
   const rows = Math.max(0, d.parts.length - 1);
@@ -289,7 +315,7 @@ function finishDownload() {
 }
 
 function setFileButtons(on) {
-  document.querySelectorAll('[data-dl], #maptracker').forEach((b) => (b.disabled = !on || !device));
+  document.querySelectorAll('[data-dl], #maptracker, #usetracker').forEach((b) => (b.disabled = !on || !device));
 }
 
 // ---- map: survey.csv rows at their estimated positions (Leaflet, loaded when first needed) ----
@@ -381,6 +407,98 @@ async function showMap(text, refit = true) {
   setTimeout(() => map.invalidateSize(), 0);
   status.textContent = `${pts.length} meters with a position` +
     (rows.length < parseCsv(text).length ? ` (${parseCsv(text).length - rows.length} without one yet)` : '') + '.';
+}
+
+// ---- usage: one meter's litres per day between walks, from history.csv ----
+let useMeters = new Map();  // id -> {label, walks: [{t, litres}]}
+const day = (t) => new Date(t).toISOString().slice(0, 10);
+
+function showUse(text) {
+  useMeters = new Map();
+  for (const r of parseCsv(text)) {
+    if (!r.litres || !r.utc) continue;
+    const t = Date.parse(r.utc), litres = parseInt(r.litres, 10);
+    if (!useMeters.has(r.id)) useMeters.set(r.id, { label: '', walks: [] });
+    const m = useMeters.get(r.id);
+    if (r.label) m.label = r.label;
+    // rows within 6 h are the same walk (alarm changes add rows): keep its last reading
+    const last = m.walks[m.walks.length - 1];
+    if (last && t - last.t < 6 * 3600e3) Object.assign(last, { t, litres });
+    else m.walks.push({ t, litres });
+  }
+  const sel = $('#usemeter'), prev = sel.value;
+  const ids = [...useMeters.keys()].filter((id) => useMeters.get(id).walks.length > 1);
+  const name = (id) => (useMeters.get(id).label ? 'House ' + useMeters.get(id).label : id);
+  ids.sort((a, b) => name(a).localeCompare(name(b), undefined, { numeric: true }));
+  sel.innerHTML = ids.map((id) => `<option value="${id}">${esc(name(id))}` +
+    (useMeters.get(id).label ? ` (${id})` : '') + '</option>').join('');
+  if (ids.includes(prev)) sel.value = prev;
+  sel.hidden = !ids.length;
+  $('#usestatus').textContent = ids.length ? `${ids.length} meters with two or more walks.`
+    : 'No meter has two walks with a reading yet.';
+  drawUse();
+}
+
+function drawUse() {
+  const m = useMeters.get($('#usemeter').value);
+  const chart = $('#usechart'), table = $('#usetable');
+  chart.innerHTML = table.innerHTML = $('#usesum').innerHTML = '';
+  if (!m) return;
+  const iv = [];
+  for (let i = 1; i < m.walks.length; i++) {
+    const a = m.walks[i - 1], b = m.walks[i];
+    const used = b.litres - a.litres, days = (b.t - a.t) / 864e5;
+    if (used < 0) continue;  // meter replaced
+    iv.push({ from: a.t, to: b.t, used, days, perDay: used / days });
+  }
+  if (!iv.length) return;
+  const total = iv.reduce((s, x) => s + x.used, 0), days = iv.reduce((s, x) => s + x.days, 0);
+  $('#usesum').innerHTML = `<b>${Math.round(total / days)}</b> l/day on average, ` +
+    `${(total / 1000).toFixed(1)} m³ over ${Math.round(days)} days`;
+
+  // bars: one per gap between walks, height = litres per day
+  // drawn at the page's own width so the text stays at its real size
+  const W = Math.round(chart.clientWidth) || 360, H = 190, L = 40, B = 22, T = 20, gap = 2;
+  const max = Math.max(...iv.map((x) => x.perDay)) || 1;
+  const step = Math.pow(10, Math.floor(Math.log10(max)));
+  const top = Math.ceil(max / step) * step;
+  const y = (v) => T + (H - T - B) * (1 - v / top);
+  const bw = (W - L) / iv.length;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Litres per day between walks">`;
+  for (const v of [0, top / 2, top]) {
+    svg += `<line x1="${L}" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)" stroke-width="1"/>` +
+      `<text x="${L - 6}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${Math.round(v)}</text>`;
+  }
+  iv.forEach((x, i) => {
+    const x0 = L + i * bw + gap / 2, w = Math.max(bw - gap, 1), h = y(0) - y(x.perDay), r = Math.min(4, w / 2, h);
+    // rounded top, square at the baseline
+    svg += `<path d="M${x0},${y(0)} v${-(h - r)} q0,${-r} ${r},${-r} h${w - 2 * r} q${r},0 ${r},${r} v${h - r} z" ` +
+      `fill="var(--accent)"/>` +
+      `<rect data-i="${i}" x="${L + i * bw}" y="${T}" width="${bw}" height="${H - T - B}" fill="transparent"/>`;
+  });
+  const lab = (i) => `<text x="${L + (i + 0.5) * bw}" y="${H - 6}" text-anchor="middle" font-size="11" ` +
+    `fill="var(--muted)">${day(iv[i].to).slice(5)}</text>`;
+  svg += lab(0) + (iv.length > 1 ? lab(iv.length - 1) : '');
+  svg += `<text x="0" y="11" font-size="11" fill="var(--muted)">l/day</text></svg>`;
+  chart.innerHTML = svg + '<div class="tip" hidden></div>';
+  const tip = chart.querySelector('.tip');
+  const show = (e) => {
+    const i = e.target.dataset.i;
+    if (i === undefined) { tip.hidden = true; return; }
+    const x = iv[i], box = chart.getBoundingClientRect(), k = box.width / W;
+    tip.innerHTML = `${day(x.from)} → ${day(x.to)}<br><b>${Math.round(x.perDay)} l/day</b>, ${x.used} l in ` +
+      `${x.days.toFixed(1)} days`;
+    tip.style.left = Math.min(Math.max((L + (+i + 0.5) * bw) * k, 80), box.width - 80) + 'px';
+    tip.style.top = y(x.perDay) * k - 6 + 'px';
+    tip.hidden = false;
+  };
+  chart.onpointermove = chart.onpointerdown = show;  // replaces the last meter's handlers
+  chart.onpointerleave = () => (tip.hidden = true);
+
+  table.innerHTML = '<tr><th>walk</th><th>reading m³</th><th>used l</th><th>l/day</th></tr>' +
+    `<tr><td>${day(m.walks[0].t)}</td><td>${(m.walks[0].litres / 1000).toFixed(3)}</td><td></td><td></td></tr>` +
+    iv.map((x) => `<tr><td>${day(x.to)}</td><td>${(m.walks.find((w) => w.t === x.to).litres / 1000).toFixed(3)}</td>` +
+      `<td>${x.used}</td><td>${Math.round(x.perDay)}</td></tr>`).join('');
 }
 
 // ---- writes (one GATT operation at a time) ----
@@ -572,6 +690,7 @@ document.querySelectorAll('[role=tab]').forEach((t) => t.addEventListener('click
     $('#' + o.dataset.tab).hidden = o !== t;
   });
   if (map && t.dataset.tab === 'maptab') map.invalidateSize();
+  if (t.dataset.tab === 'usetab' && useMeters.size) drawUse();  // sized to the tab, which was hidden
 }));
 $('#cmdform').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -586,13 +705,22 @@ document.querySelectorAll('[data-cmd]').forEach((b) => b.addEventListener('click
   sendCmd(b.dataset.cmd);
 }));
 $('#clearlog').addEventListener('click', () => { lines = []; logEl.textContent = ''; });
-$('#maptracker').addEventListener('click', () => {
+// A file from the tracker shown on the page instead of saved.
+function loadInto(cmd, into, what) {
   if (download) return;
-  download = { name: null, parts: [], bytes: 0, failed: false, toMap: true };
+  download = { name: null, parts: [], bytes: 0, failed: false, into };
   setFileButtons(false);
-  $('#mapstatus').textContent = 'loading survey from the tracker…';
-  sendCmd('d');
+  $(into.status).textContent = `loading ${what} from the tracker…`;
+  sendCmd(cmd);
+}
+$('#maptracker').addEventListener('click', () => loadInto('d', { status: '#mapstatus', show: showMap }, 'the survey'));
+$('#usetracker').addEventListener('click', () => loadInto('h', { status: '#usestatus', show: showUse }, 'the history'));
+$('#usefile').addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  if (f) showUse(await f.text());
+  e.target.value = '';
 });
+$('#usemeter').addEventListener('change', drawUse);
 document.querySelectorAll('[data-colour]').forEach((b) => b.addEventListener('click', () => {
   colourBy = b.dataset.colour;
   document.querySelectorAll('[data-colour]').forEach((o) => o.setAttribute('aria-pressed', o === b));
