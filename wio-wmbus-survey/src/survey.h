@@ -2,6 +2,7 @@
 // Plain C++, no Arduino dependencies, so it can be unit-tested on a PC (test/test_survey.cpp).
 #pragma once
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -41,6 +42,9 @@ struct Meter {
   uint32_t loggedUtc;        // last history.csv row
   uint16_t loggedAlarms;     // alarms in that row
   uint32_t rawLoggedUtc;     // last raw.csv row
+  // use since the last walk (format 4): readings in the history rows, 0 = unknown
+  uint32_t loggedLitres;           // in the last row
+  uint32_t baseLitres, baseUtc;    // in the last row of the walk before
   // runtime only (reset on load)
   uint32_t lastSeen;
   bool thisSession;
@@ -49,7 +53,54 @@ struct Meter {
 };
 // Saved surveys are read back byte for byte. Changing Meter means a new SURVEY_VERSION and a
 // conversion in main.cpp's loadSnapshot(), then updating this size.
-static_assert(sizeof(Meter) == 132, "Meter layout changed: see comment above");
+static_assert(sizeof(Meter) == 144, "Meter layout changed: see comment above");
+
+// Survey format 3 (previous builds), converted on load. Same as Meter up to rawLoggedUtc.
+struct MeterV3 {
+  uint32_t id;
+  char mfct[4];
+  uint8_t ver, type;
+  uint8_t mode;
+  uint16_t alarms;
+  uint32_t litres;
+  bool hasLitres;
+  int16_t lastRssi, bestRssi;
+  uint16_t count;
+  uint32_t utc;
+  uint8_t nSamples;
+  Sample samples[MAX_SAMPLES];
+  bool hasIzarInfo;
+  uint8_t battHalfYears;
+  uint32_t periodS;
+  uint32_t billingLitres;
+  uint32_t billingDate;
+  uint32_t loggedUtc;
+  uint16_t loggedAlarms;
+  uint32_t rawLoggedUtc;
+  uint32_t lastSeen;
+  bool thisSession, heardSinceLog, rawThisSession;
+};
+static_assert(sizeof(MeterV3) == 132, "format 3 is on the flash: don't change it");
+static_assert(offsetof(Meter, loggedLitres) == offsetof(MeterV3, lastSeen), "Meter must extend MeterV3");
+
+// The last row's reading wasn't kept, but if the latest reading is from the same walk it's
+// near enough, so the use shows from the next walk.
+inline void convertV3(const MeterV3 &o, Meter &m) {
+  memset(&m, 0, sizeof(m));
+  memcpy(&m, &o, offsetof(MeterV3, lastSeen));
+  if (m.hasLitres && m.loggedUtc && m.utc < m.loggedUtc + LOG_INTERVAL_S) m.loggedLitres = m.litres;
+}
+
+// meters[] holding n format 3 records back to back (as a snapshot loads them): converted where
+// they are, from the last one back, so none is overwritten before it's moved.
+inline void convertV3InPlace(Meter *meters, int n) {
+  static_assert(sizeof(MeterV3) <= sizeof(Meter), "converting in place needs the old records smaller");
+  for (int i = n - 1; i >= 0; i--) {
+    MeterV3 o;
+    memcpy(&o, (uint8_t *)meters + i * sizeof(MeterV3), sizeof(o));
+    convertV3(o, meters[i]);
+  }
+}
 
 // ---------- time ----------
 // Seconds since 1970 (days from civil, Howard Hinnant).
@@ -159,6 +210,32 @@ inline bool meterSerial(const Meter &m, char out[12]) {
 // One history row per meter per walk, plus one whenever its alarms change.
 inline bool historyDue(const Meter &m, uint32_t now) {
   return m.heardSinceLog && (now >= m.loggedUtc + LOG_INTERVAL_S || m.alarms != m.loggedAlarms);
+}
+
+// A history row was logged at `now`. The first row of a new walk moves the previous walk's
+// reading into base, so the use since then can be shown.
+inline void noteLogged(Meter &m, uint32_t now) {
+  if (m.loggedUtc && now >= m.loggedUtc + LOG_INTERVAL_S) {
+    m.baseLitres = m.loggedLitres;
+    m.baseUtc = m.loggedLitres ? m.loggedUtc : 0;
+  }
+  m.loggedUtc = now;
+  m.loggedAlarms = m.alarms;
+  m.loggedLitres = m.hasLitres ? m.litres : 0;
+}
+
+// Water used between the last walk before the latest reading and that reading. false if
+// there's no earlier walk with a reading yet.
+inline bool usageSinceLastWalk(const Meter &m, uint32_t &litres, uint32_t &secs) {
+  if (!m.hasLitres || !m.utc) return false;
+  // the latest reading may be from a walk that hasn't been logged yet (no GPS time then)
+  bool newWalk = m.loggedUtc && m.utc >= m.loggedUtc + LOG_INTERVAL_S;
+  uint32_t refLitres = newWalk ? m.loggedLitres : m.baseLitres;
+  uint32_t refUtc = !refLitres ? 0 : newWalk ? m.loggedUtc : m.baseUtc;
+  if (!refUtc || m.utc <= refUtc || m.litres < refLitres) return false;
+  litres = m.litres - refLitres;
+  secs = m.utc - refUtc;
+  return true;
 }
 
 // ---------- CSV rows ----------

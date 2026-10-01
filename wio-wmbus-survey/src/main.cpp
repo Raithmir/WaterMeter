@@ -35,7 +35,7 @@ using Adafruit_LittleFS_Namespace::FILE_O_WRITE;
 #define FS_MARKER "/wmsurvey"    // flash is formatted once if this is missing
 #define STATE_FILE "state.bin"      // QSPI, hidden: ring of survey snapshots (see "snapshot ring")
 #define STATE_BYTES (1024 * 1024UL)  // smaller sizes are tried if there's no free 1 MB run
-#define RING_MIN_BLOCKS 48           // >= 2 x largest snapshot (512 meters + full logs = 19 blocks) + header
+#define RING_MIN_BLOCKS 48           // >= 2 x largest snapshot (512 meters + full logs = 21 blocks) + header
 #define SURVEY_FILE "/survey.bin"    // older builds (QSPI or internal flash); fallback if the ring fails
 #define SURVEY_CSV "/survey.csv"     // QSPI, written when a computer is plugged in
 #define DRIVE_LABEL "WMBUS"
@@ -43,7 +43,7 @@ using Adafruit_LittleFS_Namespace::FILE_O_WRITE;
 #define FILE_VERSION_LABELS 2
 #define SETTINGS_FILE "/settings.bin"  // internal flash, saved LABEL_SAVE_MS after the last change
 #define FILE_VERSION_SETTINGS 2  // 2 added show, huntBeep
-#define SURVEY_VERSION 3         // 3 added IZAR last-month/battery/period and log state.
+#define SURVEY_VERSION 4         // 3 added IZAR last-month/battery/period and log state, 4 use since last walk.
                                  // Changing Meter (survey.h) means a new version AND a conversion in
                                  // loadSnapshot(), or the saved survey is dropped on upgrade.
 #define HISTORY_FILE "/history.csv"  // one row per meter per walk
@@ -422,6 +422,15 @@ int readSurvey(F &f) {
   if (f.read(&h, sizeof(h)) != sizeof(h) || h.magic != MAGIC_SURVEY || h.count > MAX_METERS) return 0;
   if (h.version == SURVEY_VERSION && f.size() == sizeof(h) + sizeof(Meter) * h.count)
     return f.read(meters, sizeof(Meter) * h.count) == (int)(sizeof(Meter) * h.count) ? h.count : 0;
+  if (h.version == 3 && f.size() == sizeof(h) + sizeof(MeterV3) * h.count) {
+    for (int i = 0; i < h.count; i++) {
+      MeterV3 o;
+      if (f.read(&o, sizeof(o)) != sizeof(o)) return 0;
+      convertV3(o, meters[i]);
+    }
+    con.printf("# converted survey from format 3 (%d meters)\n", h.count);
+    return h.count;
+  }
   if (h.version != 2 || f.size() != sizeof(h) + sizeof(MeterV2) * h.count) return 0;
   for (int i = 0; i < h.count; i++) {
     MeterV2 o;
@@ -564,10 +573,19 @@ snapring::Contents snapContents() {
 
 // Newest valid snapshot into meters[] and the log buffers. -1 if there is none.
 int loadSnapshot() {
+  auto damaged = [](uint32_t seq) { con.printf("# snapshot %lu damaged, trying an older one\n", (unsigned long)seq); };
   snapring::Contents c = snapContents();
-  int n = ring.load(SURVEY_VERSION, c, [](uint32_t seq) {
-    con.printf("# snapshot %lu damaged, trying an older one\n", (unsigned long)seq);
-  });
+  int n = ring.load(SURVEY_VERSION, c, damaged);
+  if (n < 0) {
+    // Format 3 from an older build: its smaller records fit in meters[] and are converted there.
+    c.itemSize = sizeof(MeterV3);
+    n = ring.load(3, c, damaged);
+    if (n >= 0) {
+      convertV3InPlace(meters, n);
+      con.printf("# converted survey from format 3 (%d meters)\n", n);
+      surveyDirty = true;
+    }
+  }
   historyLog.len = c.aLen;
   rawLog.len = c.bLen;
   return n;
@@ -886,8 +904,7 @@ void logHistory() {
     size_t n = historyRow(line, sizeof(line) - 1, m, getLabel(m.id), now);
     strcpy(line + n, "\n");
     if (!logLine(historyLog, line)) return;  // full and the computer has the drive: next time
-    m.loggedUtc = now;
-    m.loggedAlarms = m.alarms;
+    noteLogged(m, now);
     m.heardSinceLog = false;
     surveyDirty = true;
   }
@@ -1447,16 +1464,25 @@ void drawDetail() {
   snprintf(line, sizeof(line), "rssi %d best %d x%u", m.lastRssi, m.bestRssi, m.count);
   oled.drawStr(0, 34, line);
 
+  // use since the last walk, e.g. "used 1234 l/6d 205 l/d"
+  uint32_t used, secs;
+  if (usageSinceLastWalk(m, used, secs)) {
+    char span[8];
+    if (secs >= 86400) snprintf(span, sizeof(span), "%lud", (unsigned long)((secs + 43200) / 86400));
+    else snprintf(span, sizeof(span), "%luh", (unsigned long)((secs + 1800) / 3600));
+    snprintf(line, sizeof(line), "used %lu l/%s %lu l/d", (unsigned long)used, span,
+             (unsigned long)((uint64_t)used * 86400 / (secs ? secs : 1)));
+    oled.drawStr(0, 43, line);
+  } else if (m.hasLitres) {
+    oled.drawStr(0, 43, "use: after next walk");
+  }
+
+  // full position in survey.csv / the phone map
   double lat, lon;
   float spread;
-  if (estimatePosition(m, lat, lon, spread)) {
-    snprintf(line, sizeof(line), "%.5f,%.5f", lat, lon);
-    oled.drawStr(0, 43, line);
-    snprintf(line, sizeof(line), "pos from %u fixes +-%.0fm", m.nSamples, spread);
-    oled.drawStr(0, 52, line);
-  } else {
-    oled.drawStr(0, 43, "no position yet");
-  }
+  if (estimatePosition(m, lat, lon, spread)) snprintf(line, sizeof(line), "pos %u fixes +-%.0fm", m.nSamples, spread);
+  else snprintf(line, sizeof(line), "no position yet");
+  oled.drawStr(0, 52, line);
 
   if (m.thisSession) {
     snprintf(line, sizeof(line), "seen %lus ago", (unsigned long)((millis() - m.lastSeen) / 1000));

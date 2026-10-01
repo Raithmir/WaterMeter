@@ -19,6 +19,7 @@ Back to Meshtastic any time via https://flasher.meshtastic.org
 - Joystick press: list / detail view
 - Joystick left/right (detail view): set house number. Hold to repeat. An unlabelled meter starts next to the last number you used. Stepping to 0 removes the label.
 - Detail view, second line: for IZAR meters made by Sappel (manufacturer `SAP`), the number printed on the meter, e.g. `H25XA036488`, so you can check you're labelling the right one. Other meters show manufacturer and radio mode there.
+- Detail view, `used 1234 l/6d 205 l/d`: water used since the meter's last walk (from the history rows), over how long, and per day. A steady high rate with no leak alarm is worth a look (a dripping overflow, say). It shows from a meter's second walk; surveys saved by builds before this one are converted and show it from the next walk. `pos 5 fixes +-4m` = position quality; the coordinates are in `survey.csv` and on the phone map
 - Joystick left (list view): settings screen (see below; right goes back)
 - Joystick right (list view): diagnostics screen (any of left/right/press goes back)
 - User button (detail view): hunt page on/off, see below

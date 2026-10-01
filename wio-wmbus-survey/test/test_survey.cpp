@@ -315,12 +315,99 @@ static void testHistoryDue() {
   printf("history timing ok\n");
 }
 
+static void testUsage() {
+  Meter m = {};
+  m.hasLitres = true;
+  const uint32_t t0 = 1790172312UL, day = 86400;
+  uint32_t l, secs;
+  m.litres = 100000;
+  m.utc = t0;
+  CHECK(!usageSinceLastWalk(m, l, secs));  // first walk
+  noteLogged(m, t0);
+  CHECK(!usageSinceLastWalk(m, l, secs));
+  m.litres = 100050;  // heard again on the same walk
+  m.utc = t0 + 600;
+  CHECK(!usageSinceLastWalk(m, l, secs));
+  m.alarms = wmbus::ALM_LEAK_NOW;
+  noteLogged(m, t0 + 600);  // alarm row mid-walk: still the same walk
+  CHECK(m.baseUtc == 0 && m.loggedLitres == 100050);
+  // next walk, heard before its row is logged (no GPS time yet): compares with the last row
+  m.litres = 101250;
+  m.utc = t0 + 6 * day;
+  CHECK(usageSinceLastWalk(m, l, secs) && l == 1200 && secs == 6 * day - 600);
+  noteLogged(m, t0 + 6 * day);
+  CHECK(usageSinceLastWalk(m, l, secs) && l == 1200 && secs == 6 * day - 600);
+  m.litres = 101300;  // later on that walk
+  m.utc = t0 + 6 * day + 300;
+  CHECK(usageSinceLastWalk(m, l, secs) && l == 1250);
+  // meter replaced (reading went down): nothing shown
+  m.litres = 5;
+  CHECK(!usageSinceLastWalk(m, l, secs));
+  // a row logged before the reading was decoded doesn't count as a reference
+  Meter u = {};
+  u.utc = t0;
+  noteLogged(u, t0);
+  u.hasLitres = true;
+  u.litres = 500;
+  u.utc = t0 + day;
+  CHECK(!usageSinceLastWalk(u, l, secs));
+  noteLogged(u, t0 + day);
+  u.utc = t0 + day + 60;
+  CHECK(!usageSinceLastWalk(u, l, secs));
+  printf("usage ok\n");
+}
+
+// Format 3 records loaded back to back into meters[] keep every field when converted in place.
+static void testConvertV3() {
+  const int N = 40;
+  static Meter meters[N];
+  std::vector<MeterV3> old(N);
+  const uint32_t t0 = 1790172312UL;
+  for (int i = 0; i < N; i++) {
+    MeterV3 &o = old[i];
+    memset(&o, 0, sizeof(o));
+    o.id = 0x21000000 + i;
+    memcpy(o.mfct, "SAP", 4);
+    o.litres = 1000 * i + 7;
+    o.hasLitres = i % 3 != 0;
+    o.lastRssi = -60 - i;
+    o.bestRssi = -50;
+    o.nSamples = 2;
+    o.samples[1] = {515000000 + i, -1000000 - i, (int16_t)(-70 - i)};
+    o.utc = t0 + i;
+    o.periodS = 32;
+    o.loggedUtc = i % 2 ? t0 : t0 - 7 * 86400;  // odd: logged on the walk of the latest reading
+    o.loggedAlarms = (uint16_t)i;
+    o.rawLoggedUtc = t0 - 5;
+    o.lastSeen = 12345;
+    o.thisSession = true;
+  }
+  memset(meters, 0xAA, sizeof(meters));
+  memcpy(meters, old.data(), N * sizeof(MeterV3));
+  convertV3InPlace(meters, N);
+  bool ok = true;
+  for (int i = 0; i < N; i++) {
+    const Meter &m = meters[i];
+    const MeterV3 &o = old[i];
+    ok &= m.id == o.id && !strcmp(m.mfct, "SAP") && m.litres == o.litres && m.hasLitres == o.hasLitres &&
+          m.lastRssi == o.lastRssi && m.utc == o.utc && m.samples[1].lat == o.samples[1].lat &&
+          m.samples[1].rssi == o.samples[1].rssi && m.periodS == 32 && m.loggedUtc == o.loggedUtc &&
+          m.loggedAlarms == o.loggedAlarms && m.rawLoggedUtc == o.rawLoggedUtc;
+    ok &= m.lastSeen == 0 && !m.thisSession && m.baseLitres == 0 && m.baseUtc == 0;
+    ok &= m.loggedLitres == (o.hasLitres && i % 2 ? o.litres : 0);
+  }
+  CHECK(ok);
+  printf("format 3 conversion ok\n");
+}
+
 int main() {
   testRing();
   testTime();
   testPosition();
   testCsv();
   testHistoryDue();
+  testUsage();
+  testConvertV3();
   printf(fails ? "%d FAILED\n" : "ALL PASS\n", fails);
   return fails ? 1 : 0;
 }
