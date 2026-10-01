@@ -25,17 +25,16 @@ Back to Meshtastic any time via https://flasher.meshtastic.org
 - User button (detail view): hunt page on/off, see below
 - User button (list view): sort by RSSI / last seen. Either way, meters heard since power-on come first; RSSI sorts those by their latest signal (so the list follows you as you walk) and the rest by their saved best.
 - Screen turns off after 2 minutes without a button press (changeable in settings); the next press only wakes it. A new leak or low battery wakes it too.
-- Beeps: three short = meter newly reporting a leak; two low = battery below 3.5 V
+- Beeps: three short = meter newly reporting a leak; two low = battery below 3.5 V; on the hunt page, one per telegram, higher the stronger
 
 ## Settings
 Up/down picks a setting (the list scrolls), press changes it (screen off steps through its choices), right goes back. Saved to the internal flash a few seconds after the last change.
 - Bluetooth (default off): lets a phone connect, see below. `linked` = a phone is connected
 - GPS: off puts the GPS module in standby, which saves power (e.g. when leaving the tracker by your own meter). No positions are recorded then. Times keep running from the last GPS time, if there was one since power-on
 - Screen off: 30 s, 1 min, 2 min, 5 min or never
-- Beeps: leak, low battery and start-up beeps
+- Beeps: leak, low battery, start-up and hunt page beeps
 - Sort: same as the user button
 - Show: which meters the list shows: all, not heard (since power-on: what's left of the walk) or unlabelled. The selected meter stays in the list until you move off it, so it doesn't vanish the moment it's heard or labelled
-- Hunt beep (default on): the hunt page beeps for each telegram from its meter, higher the stronger the signal. Beeps off silences it too
 - Forget phones: removes every paired phone (Bluetooth must be on). Pair again from the page afterwards
 
 The top line shows the Bluetooth name (`WMBUS-` + 4 characters unique to the tracker).
@@ -74,7 +73,7 @@ For finding which house a meter belongs to. From a meter's detail view, press th
     peak -58  x14
     seen 2s ago
 
-The big number and bar are the latest telegram's RSSI (bar from -110 to -40 dBm). The tick and `peak` are the strongest since you opened the page, so you can walk past and come back to where it peaked. Each telegram also beeps (Hunt beep setting), higher the stronger. `(lost?)` after the time = no telegram for over twice the meter's broadcast interval (IZAR meters say what that is). Up/down hunts the next meter, left/right still labels, the user button goes back to the details and press to the list.
+The big number and bar are the latest telegram's RSSI (bar from -110 to -40 dBm). The tick and `peak` are the strongest since you opened the page, so you can walk past and come back to where it peaked. Each telegram also beeps, higher the stronger (off with the Beeps setting). `(lost?)` after the time = no telegram for over twice the meter's broadcast interval (IZAR meters say what that is). Up/down hunts the next meter, left/right still labels, the user button goes back to the details and press to the list.
 
 ## Diagnostics screen
 Frames decoded ok / failed (`err` always climbs a little: noise matching the sync word), GPS satellites and fix, battery, whether a computer has the USB drive, QSPI flash and save ring, snapshot count and labels, log bytes waiting to be appended, uptime. The serial `s` command shows the same and more.

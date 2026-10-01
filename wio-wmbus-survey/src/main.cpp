@@ -42,7 +42,7 @@ using Adafruit_LittleFS_Namespace::FILE_O_WRITE;
 #define LABEL_FILE "/labels.bin"
 #define FILE_VERSION_LABELS 2
 #define SETTINGS_FILE "/settings.bin"  // internal flash, saved LABEL_SAVE_MS after the last change
-#define FILE_VERSION_SETTINGS 2  // 2 added show, huntBeep
+#define FILE_VERSION_SETTINGS 2  // 2 added show
 #define SURVEY_VERSION 4         // 3 added IZAR last-month/battery/period and log state, 4 use since last walk.
                                  // Changing Meter (survey.h) means a new version AND a conversion in
                                  // loadSnapshot(), or the saved survey is dropped on upgrade.
@@ -188,8 +188,7 @@ struct Settings {
   bool beeps;
   bool sortByRssi;    // also toggled by the user button
   uint8_t show;       // SHOW_*: which meters the list shows
-  bool huntBeep;      // hunt page beeps each telegram, pitch rising with the signal
-} settings = {false, true, 2, true, true, SHOW_ALL, true};
+} settings = {false, true, 2, true, true, SHOW_ALL};
 bool settingsDirty = false;
 uint32_t lastSettingsEdit = 0;
 
@@ -659,7 +658,7 @@ void loadSettings() {
   SettingsV1 o;
   if (loadFile(SETTINGS_FILE, MAGIC_SETTINGS, FILE_VERSION_SETTINGS, &s, sizeof(s), 1) == 1) settings = s;
   else if (loadFile(SETTINGS_FILE, MAGIC_SETTINGS, 1, &o, sizeof(o), 1) == 1)
-    settings = {o.ble, o.gps, o.screenOff, o.beeps, o.sortByRssi, SHOW_ALL, true};
+    settings = {o.ble, o.gps, o.screenOff, o.beeps, o.sortByRssi, SHOW_ALL};
   if (settings.screenOff >= N_SCREEN_OFF) settings.screenOff = 2;
   if (settings.show >= N_SHOW) settings.show = SHOW_ALL;
 }
@@ -989,7 +988,7 @@ void handlePacket() {
   bool hunted = detail && hunt && m.id == selId;
   if (hunted) {
     if (rssi > huntPeak) huntPeak = rssi;
-    if (settings.huntBeep && !beepSeq.left) beep(huntPitch(rssi), 60);
+    if (!beepSeq.left) beep(huntPitch(rssi), 60);  // the Beeps setting covers these too
   }
   if (newLeak) {
     beepRepeat(3, 3200, 120, 60);
@@ -1559,7 +1558,7 @@ void drawDiag() {
   oled.drawStr(0, 63, line);
 }
 
-enum { SET_BT, SET_GPS, SET_SCREEN, SET_BEEPS, SET_SORT, SET_SHOW, SET_HUNT_BEEP, SET_FORGET, N_SETTINGS };
+enum { SET_BT, SET_GPS, SET_SCREEN, SET_BEEPS, SET_SORT, SET_SHOW, SET_FORGET, N_SETTINGS };
 bool settingsOpen = false;
 int setSel = 0, setTop = 0;
 
@@ -1579,7 +1578,6 @@ void drawSettings() {
       case SET_BEEPS: name = "Beeps"; val = settings.beeps ? "on" : "off"; break;
       case SET_SORT: name = "Sort"; val = settings.sortByRssi ? "RSSI" : "last seen"; break;
       case SET_SHOW: name = "Show"; val = SHOW_NAMES[settings.show]; break;
-      case SET_HUNT_BEEP: name = "Hunt beep"; val = settings.huntBeep ? "on" : "off"; break;
       case SET_FORGET: name = "Forget phones"; val = forgotAt && millis() - forgotAt < 3000 ? "done" : "press"; break;
     }
     snprintf(line, sizeof(line), "%-14s%10s", name, val);
@@ -1672,7 +1670,6 @@ void changeSetting(int i) {
       settings.screenOff = (settings.screenOff + 1) % N_SCREEN_OFF;
       break;
     case SET_BEEPS: settings.beeps = !settings.beeps; break;
-    case SET_HUNT_BEEP: settings.huntBeep = !settings.huntBeep; break;
     case SET_SORT:
       settings.sortByRssi = !settings.sortByRssi;
       sortMeters();
@@ -1821,7 +1818,6 @@ void runCommand(char *c, bool fromBle = false) {
     con.printf("bluetooth %s %s, gps %s, screen off %s, beeps %s, show %s\n", bleName,
                !settings.ble ? "off" : bleLinked() ? "linked" : "advertising", settings.gps ? "on" : "off",
                SCREEN_OFF_NAMES[settings.screenOff], settings.beeps ? "on" : "off", SHOW_NAMES[settings.show]);
-    con.printf("hunt beep %s\n", settings.huntBeep ? "on" : "off");
     con.println("# end");
   } else if (!strcmp(c, "h")) {
     printLog(historyLog);
