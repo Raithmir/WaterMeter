@@ -21,7 +21,7 @@ Back to Meshtastic any time via https://flasher.meshtastic.org
 - Detail view, second line: for IZAR meters made by Sappel (manufacturer `SAP`), the number printed on the meter, e.g. `H25XA036488`, so you can check you're labelling the right one. Other meters show manufacturer and radio mode there.
 - Joystick left (list view): settings screen (see below; right goes back)
 - Joystick right (list view): diagnostics screen (any of left/right/press goes back)
-- User button: sort by best RSSI / last seen
+- User button: sort by RSSI / last seen. Either way, meters heard since power-on come first; RSSI sorts those by their latest signal (so the list follows you as you walk) and the rest by their saved best.
 - Screen turns off after 2 minutes without a button press (changeable in settings); the next press only wakes it. A new leak or low battery wakes it too.
 - Beeps: three short = meter newly reporting a leak; two low = battery below 3.5 V
 

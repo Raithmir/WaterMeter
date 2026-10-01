@@ -757,8 +757,10 @@ void sortMeters() {
     while (j >= 0) {
       const Meter &a = meters[order[j]], &b = meters[k];
       bool swap;
-      if (settings.sortByRssi) swap = a.bestRssi < b.bestRssi;
-      else if (a.thisSession != b.thisSession) swap = b.thisSession;
+      // meters heard this session first in either mode, by latest RSSI so the list follows you
+      // down the road; the rest by their saved best
+      if (a.thisSession != b.thisSession) swap = b.thisSession;
+      else if (settings.sortByRssi) swap = a.thisSession ? a.lastRssi < b.lastRssi : a.bestRssi < b.bestRssi;
       else if (a.thisSession) swap = a.lastSeen < b.lastSeen;
       else swap = a.utc < b.utc;
       if (!swap) break;
@@ -1318,7 +1320,7 @@ void drawList() {
 
   if (meterCount == 0) {
     oled.drawStr(0, 24, "Listening T1 868.95...");
-    oled.drawStr(0, 34, settings.sortByRssi ? "sort: best RSSI" : "sort: last seen");
+    oled.drawStr(0, 34, settings.sortByRssi ? "sort: RSSI" : "sort: last seen");
     if (!fsOk) oled.drawStr(0, 44, "flash error: no labels");
     if (!qspiOk) oled.drawStr(0, 54, "QSPI error: small survey");
     return;
@@ -1459,7 +1461,7 @@ void drawSettings() {
       case SET_GPS: name = "GPS"; val = settings.gps ? "on" : "off"; break;
       case SET_SCREEN: name = "Screen off"; val = SCREEN_OFF_NAMES[settings.screenOff]; break;
       case SET_BEEPS: name = "Beeps"; val = settings.beeps ? "on" : "off"; break;
-      case SET_SORT: name = "Sort"; val = settings.sortByRssi ? "best RSSI" : "last seen"; break;
+      case SET_SORT: name = "Sort"; val = settings.sortByRssi ? "RSSI" : "last seen"; break;
       case SET_FORGET: name = "Forget phones"; val = forgotAt && millis() - forgotAt < 3000 ? "done" : "press"; break;
     }
     snprintf(line, sizeof(line), "%-14s%10s", name, val);
