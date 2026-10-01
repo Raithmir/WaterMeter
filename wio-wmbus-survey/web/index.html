@@ -434,7 +434,8 @@ async function showMap(text, refit = true) {
       (r.label ? `<br>${esc(r.id)}` : '') + (r.serial ? `<br>${esc(r.serial)}` : '') +
       `<br>${esc(m3)}` + use + (alarms ? `<br><b>${esc(alarms)}</b>` : '') +
       `<br>best ${esc(r.best_rssi)} dBm, ${esc(r.samples)} fixes ±${Math.round(r.spread_m)} m` +
-      (r.utc ? `<br>heard ${esc(r.utc.replace('T', ' ').replace('Z', ' UTC'))}` : '');
+      (r.utc ? `<br>heard ${esc(r.utc.replace('T', ' ').replace('Z', ' UTC'))}` : '') +
+      (r.litres ? `<br><a href="#" data-use="${esc(r.id)}">Usage chart →</a>` : '');
     L.circle(ll, { radius: Math.max(parseFloat(r.spread_m) || 0, 2), color, weight: 1, fillOpacity: 0.12 })
       .addTo(mapLayer);
     L.circleMarker(ll, { radius: 6, color: '#0d1117', weight: 1, fillColor: color, fillOpacity: 1 })
@@ -452,6 +453,7 @@ async function showMap(text, refit = true) {
 
 // ---- usage: one meter's litres per day between walks, from history.csv ----
 let useMeters = new Map();  // id -> {label, walks: [{t, litres}]}
+let useWanted = null;        // meter to show once the history is loaded
 const day = (t) => new Date(t).toISOString().slice(0, 10);
 
 function showUse(text) {
@@ -473,11 +475,30 @@ function showUse(text) {
   ids.sort((a, b) => name(a).localeCompare(name(b), undefined, { numeric: true }));
   sel.innerHTML = ids.map((id) => `<option value="${esc(id)}">${esc(name(id))}` +
     (useMeters.get(id).label ? ` (${id})` : '') + '</option>').join('');
-  if (ids.includes(prev)) sel.value = prev;
+  if (ids.includes(useWanted)) sel.value = useWanted;  // asked for from the map
+  else if (ids.includes(prev)) sel.value = prev;
+  useWanted = null;
   sel.hidden = !ids.length;
   $('#usestatus').textContent = ids.length ? `${ids.length} meters with two or more walks.`
     : 'No meter has two walks with a reading yet.';
   drawUse();
+}
+
+// From a map popup: that meter's chart, loading the history first if it isn't yet.
+function openUsage(id) {
+  $('[data-tab=usetab]').click();
+  if (useMeters.size) {
+    if (useMeters.has(id) && useMeters.get(id).walks.length > 1) {
+      $('#usemeter').value = id;
+      drawUse();
+    } else {
+      $('#usestatus').textContent = `${id} has no two walks with a reading in this history yet.`;
+    }
+    return;
+  }
+  useWanted = id;
+  if (device && device.gatt.connected) $('#usetracker').click();
+  else $('#usestatus').textContent = 'Open history.csv (or connect and press From tracker) to see its chart.';
 }
 
 function drawUse() {
@@ -788,6 +809,13 @@ document.querySelectorAll('[data-colour]').forEach((b) => b.addEventListener('cl
   else drawLegend();
 }));
 drawLegend();
+$('#map').addEventListener('click', (e) => {
+  const a = e.target.closest('[data-use]');
+  if (!a) return;
+  e.preventDefault();
+  openUsage(a.dataset.use);
+});
+
 // survey.csv and/or track.csv, told apart by their header
 $('#mapfile').addEventListener('change', async (e) => {
   const texts = await Promise.all([...e.target.files].map((f) => f.text()));
