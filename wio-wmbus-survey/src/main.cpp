@@ -664,8 +664,11 @@ void loadSettings() {
   Settings s;
   SettingsV1 o;
   if (loadFile(SETTINGS_FILE, MAGIC_SETTINGS, FILE_VERSION_SETTINGS, &s, sizeof(s), 1) == 1) settings = s;
-  else if (loadFile(SETTINGS_FILE, MAGIC_SETTINGS, 1, &o, sizeof(o), 1) == 1)
+  else if (loadFile(SETTINGS_FILE, MAGIC_SETTINGS, 1, &o, sizeof(o), 1) == 1) {
     settings = {o.ble, o.gps, o.screenOff, o.beeps, o.sortByRssi, SHOW_ALL};
+    settingsDirty = true;  // saved in the new format straight away, so the conversion can go one day
+    lastSettingsEdit = millis();
+  }
   if (settings.screenOff >= N_SCREEN_OFF) settings.screenOff = 2;
   if (settings.show >= N_SHOW) settings.show = SHOW_ALL;
 }
