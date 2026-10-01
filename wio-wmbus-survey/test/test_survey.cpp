@@ -258,12 +258,18 @@ static void testCsv() {
   surveyRow(row, sizeof(row), iz, "12A");
   CHECK(std::string(row) ==
         "1a2b3c4d,12A,K36H@387917,T1,SAP,water (85),a0,123456,LEAK leak(was),-71,-65,42,2026-09-23T14:05:12Z,"
-        "51.5000000,-0.1000000,0.0,1,120000,2026-09-01,9.5,8");
+        "51.5000000,-0.1000000,0.0,1,120000,2026-09-01,9.5,8,,,");
+  Meter used = iz;  // walked 6 days earlier with 1200 l less on the meter
+  used.loggedUtc = used.utc - 6 * 86400;
+  used.loggedLitres = used.litres - 1200;
+  surveyRow(row, sizeof(row), used, "12A");
+  const std::string tail = ",9.5,8,1200,6.0,200", got = row;
+  CHECK(got.size() > tail.size() && got.compare(got.size() - tail.size(), tail.size(), tail) == 0);
   historyRow(row, sizeof(row), iz, "12A", 1790172312UL);
   CHECK(std::string(row) == "2026-09-23T14:05:12Z,1a2b3c4d,12A,SAP,water,123456,120000,2026-09-01,LEAK leak(was),9.5,-71,K36H@387917");
 
   // Every kind of meter gives rows with the header's columns.
-  Meter kinds[4] = {iz, iz, {}, {}};
+  Meter kinds[5] = {iz, iz, {}, {}, used};
   kinds[1].billingDate = 0;  // IZAR frame too short for the billing reading
   kinds[1].nSamples = 0;
   kinds[2].id = 0x12345678;

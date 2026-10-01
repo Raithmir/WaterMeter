@@ -243,7 +243,7 @@ inline bool usageSinceLastWalk(const Meter &m, uint32_t &litres, uint32_t &secs)
 // already free of commas and quotes (main.cpp's setLabel), and no other field can hold one.
 static const char SURVEY_HEADER[] =
     "id,label,serial,mode,mfct,type,ver,litres,alarms,rssi,best_rssi,count,utc,lat,lon,spread_m,samples,"
-    "billing_litres,billing_date,battery_years,period_s";
+    "billing_litres,billing_date,battery_years,period_s,used_litres,used_days,litres_per_day";
 static const char HISTORY_HEADER[] =
     "utc,id,label,mfct,type,litres,billing_litres,billing_date,alarms,battery_years,rssi,serial";
 static const char RAW_HEADER[] = "utc,id,label,mode,mfct,type,rssi,telegram";
@@ -297,6 +297,11 @@ inline size_t surveyRow(char *out, size_t n, const Meter &m, const char *label) 
   } else {
     o.s(",,,");
   }
+  uint32_t used, secs;  // since the last walk, as on the detail view
+  if (usageSinceLastWalk(m, used, secs))
+    o.f(",%lu,%.1f,%.0f", (unsigned long)used, secs / 86400.0, used * 86400.0 / secs);
+  else
+    o.s(",,,");
   return o.len;
 }
 

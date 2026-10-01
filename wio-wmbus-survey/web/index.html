@@ -172,14 +172,13 @@
   <div class="row">
     <button id="maptracker">From tracker</button>
     <label class="button">Open survey.csv<input type="file" id="mapfile" accept=".csv,text/csv" hidden></label>
+    <span class="views" role="group" aria-label="Colour by" style="margin:0 0 0 auto">
+      <button data-colour="status" aria-pressed="true">Status</button>
+      <button data-colour="use" aria-pressed="false">Use</button>
+    </span>
   </div>
   <div id="map"></div>
-  <div class="legend">
-    <span><i style="background:#f85149"></i>leaking now</span>
-    <span><i style="background:#d29922"></i>other alarm</span>
-    <span><i style="background:#3fb950"></i>labelled</span>
-    <span><i style="background:#8b949e"></i>unlabelled</span>
-  </div>
+  <div class="legend" id="legend"></div>
   <p class="note" id="mapstatus">Each meter at its estimated position; the circle is its spread (how far apart
     the receptions it's worked out from were). Tap one for details. "Open survey.csv" works without Bluetooth,
     e.g. with the file copied off the tracker's USB drive.</p>
@@ -320,7 +319,27 @@ function parseCsv(text) {
 
 const esc = (v) => String(v).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
 
-async function showMap(text) {
+// Marker colours: by status, or by litres per day since the last walk.
+const STATUS = [['#f85149', 'leaking now'], ['#d29922', 'other alarm'], ['#3fb950', 'labelled'], ['#8b949e', 'unlabelled']];
+const USE = [[200, '#3fb950', 'under 200 l/day'], [500, '#d29922', '200–500'], [1000, '#f0883e', '500–1000'],
+  [Infinity, '#f85149', 'over 1000'], [null, '#8b949e', 'not known yet']];
+let colourBy = 'status', mapText = null;
+function markerColour(r) {
+  if (colourBy === 'use') {
+    if (r.litres_per_day === '' || r.litres_per_day === undefined) return USE[4][1];
+    return USE.find((u) => u[0] !== null && parseFloat(r.litres_per_day) < u[0])[1];
+  }
+  const alarms = r.alarms || '';
+  return /LEAK/.test(alarms) ? STATUS[0][0] : alarms ? STATUS[1][0] : r.label ? STATUS[2][0] : STATUS[3][0];
+}
+function drawLegend() {
+  const items = colourBy === 'use' ? USE.map((u) => [u[1], u[2]]) : STATUS;
+  $('#legend').innerHTML = items.map(([c, t]) => `<span><i style="background:${c}"></i>${t}</span>`).join('');
+}
+
+async function showMap(text, refit = true) {
+  mapText = text;
+  drawLegend();
   const status = $('#mapstatus');
   try {
     await loadLeaflet();
@@ -341,11 +360,13 @@ async function showMap(text) {
   for (const r of rows) {
     const ll = [parseFloat(r.lat), parseFloat(r.lon)];
     const alarms = r.alarms || '';
-    const color = /LEAK/.test(alarms) ? '#f85149' : alarms ? '#d29922' : r.label ? '#3fb950' : '#8b949e';
+    const color = markerColour(r);
+    const use = r.used_litres ? `<br>used ${esc(r.used_litres)} l in ${esc(r.used_days)} days ` +
+      `(${esc(r.litres_per_day)} l/day)` : '';
     const m3 = r.litres ? (parseInt(r.litres, 10) / 1000).toFixed(3) + ' m³' : `${r.mfct} ${r.type}`;
     const html = `<b>${r.label ? 'House ' + esc(r.label) : esc(r.id)}</b>` +
       (r.label ? `<br>${esc(r.id)}` : '') + (r.serial ? `<br>${esc(r.serial)}` : '') +
-      `<br>${esc(m3)}` + (alarms ? `<br><b>${esc(alarms)}</b>` : '') +
+      `<br>${esc(m3)}` + use + (alarms ? `<br><b>${esc(alarms)}</b>` : '') +
       `<br>best ${esc(r.best_rssi)} dBm, ${esc(r.samples)} fixes ±${Math.round(r.spread_m)} m` +
       (r.utc ? `<br>heard ${esc(r.utc.replace('T', ' ').replace('Z', ' UTC'))}` : '');
     L.circle(ll, { radius: Math.max(parseFloat(r.spread_m) || 0, 2), color, weight: 1, fillOpacity: 0.12 })
@@ -355,8 +376,8 @@ async function showMap(text) {
       .addTo(mapLayer);
     pts.push(ll);
   }
-  if (pts.length) map.fitBounds(pts, { padding: [24, 24], maxZoom: 19 });
-  else map.setView([54, -2], 5);
+  if (refit && pts.length) map.fitBounds(pts, { padding: [24, 24], maxZoom: 19 });
+  else if (refit) map.setView([54, -2], 5);
   setTimeout(() => map.invalidateSize(), 0);
   status.textContent = `${pts.length} meters with a position` +
     (rows.length < parseCsv(text).length ? ` (${parseCsv(text).length - rows.length} without one yet)` : '') + '.';
@@ -572,6 +593,13 @@ $('#maptracker').addEventListener('click', () => {
   $('#mapstatus').textContent = 'loading survey from the tracker…';
   sendCmd('d');
 });
+document.querySelectorAll('[data-colour]').forEach((b) => b.addEventListener('click', () => {
+  colourBy = b.dataset.colour;
+  document.querySelectorAll('[data-colour]').forEach((o) => o.setAttribute('aria-pressed', o === b));
+  if (mapText) showMap(mapText, false);
+  else drawLegend();
+}));
+drawLegend();
 $('#mapfile').addEventListener('change', async (e) => {
   const f = e.target.files[0];
   if (f) showMap(await f.text());
