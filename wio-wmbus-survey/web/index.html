@@ -184,7 +184,7 @@
 <section id="maptab" class="tab" hidden>
   <div class="row">
     <button id="maptracker">From tracker</button>
-    <label class="button">Open survey.csv<input type="file" id="mapfile" accept=".csv,text/csv" hidden></label>
+    <label class="button">Open files<input type="file" id="mapfile" accept=".csv,text/csv" multiple hidden></label>
     <span class="views" role="group" aria-label="Colour by" style="margin:0 0 0 auto">
       <button data-colour="status" aria-pressed="true">Status</button>
       <button data-colour="use" aria-pressed="false">Use</button>
@@ -193,8 +193,8 @@
   <div id="map"></div>
   <div class="legend" id="legend"></div>
   <p class="note" id="mapstatus">Each meter at its estimated position; the circle is its spread (how far apart
-    the receptions it's worked out from were). Tap one for details. "Open survey.csv" works without Bluetooth,
-    e.g. with the file copied off the tracker's USB drive.</p>
+    the receptions it's worked out from were); the blue lines are where you walked. Tap a meter for details.
+    "Open files" takes survey.csv and track.csv (pick both) off the tracker's USB drive, no Bluetooth needed.</p>
 </section>
 
 <section id="usetab" class="tab" hidden>
@@ -320,8 +320,12 @@ function setFileButtons(on) {
 
 // ---- map: survey.csv rows at their estimated positions (Leaflet, loaded when first needed) ----
 let map = null, mapLayer = null;
+let leaflet = null;  // the loading promise, so two callers don't add it twice
 function loadLeaflet() {
-  if (window.L) return Promise.resolve();
+  if (!leaflet) leaflet = addLeaflet().catch((e) => { leaflet = null; throw e; });
+  return leaflet;
+}
+function addLeaflet() {
   const base = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/';
   const css = document.createElement('link');
   css.rel = 'stylesheet';
@@ -363,23 +367,51 @@ function drawLegend() {
   $('#legend').innerHTML = items.map(([c, t]) => `<span><i style="background:${c}"></i>${t}</span>`).join('');
 }
 
-async function showMap(text, refit = true) {
-  mapText = text;
-  drawLegend();
-  const status = $('#mapstatus');
+async function ensureMap() {
   try {
     await loadLeaflet();
   } catch (e) {
-    status.textContent = e.message;
-    return;
+    $('#mapstatus').textContent = e.message;
+    return false;
   }
   if (!map) {
     map = L.map('map');
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19, attribution: '&copy; OpenStreetMap contributors',
     }).addTo(map);
+    trackLayer = L.layerGroup().addTo(map);  // under the meters
     mapLayer = L.layerGroup().addTo(map);
   }
+  return true;
+}
+
+// track.csv: one line per walk (a gap of over 10 minutes starts a new one).
+let trackLayer = null, trackInfo = '';
+async function showTrack(text) {
+  if (!(await ensureMap())) return;
+  trackLayer.clearLayers();
+  const walks = [];
+  let last = 0;
+  for (const r of parseCsv(text)) {
+    const t = Date.parse(r.utc), ll = [parseFloat(r.lat), parseFloat(r.lon)];
+    if (isNaN(t) || isNaN(ll[0])) continue;
+    if (!walks.length || t - last > 10 * 60e3) walks.push([]);
+    walks[walks.length - 1].push(ll);
+    last = t;
+  }
+  for (const w of walks) L.polyline(w, { color: '#58a6ff', weight: 3, opacity: 0.7 }).addTo(trackLayer);
+  const pts = walks.flat();
+  trackInfo = pts.length ? `, track of ${walks.length} walk${walks.length > 1 ? 's' : ''}` : '';
+  if (!mapText && pts.length) map.fitBounds(pts, { padding: [24, 24], maxZoom: 19 });
+  if (!mapText) $('#mapstatus').textContent = pts.length ? `Track of ${walks.length} walks.` : 'The track is empty.';
+  else showMap(mapText, false);
+}
+
+async function showMap(text, refit = true) {
+  mapText = text;
+  drawLegend();
+  const status = $('#mapstatus');
+  if (!(await ensureMap())) return;
   mapLayer.clearLayers();
   const rows = parseCsv(text).filter((r) => r.lat && r.lon);
   const pts = [];
@@ -406,7 +438,8 @@ async function showMap(text, refit = true) {
   else if (refit) map.setView([54, -2], 5);
   setTimeout(() => map.invalidateSize(), 0);
   status.textContent = `${pts.length} meters with a position` +
-    (rows.length < parseCsv(text).length ? ` (${parseCsv(text).length - rows.length} without one yet)` : '') + '.';
+    (rows.length < parseCsv(text).length ? ` (${parseCsv(text).length - rows.length} without one yet)` : '') +
+    trackInfo + '.';
 }
 
 // ---- usage: one meter's litres per day between walks, from history.csv ----
@@ -713,7 +746,13 @@ function loadInto(cmd, into, what) {
   $(into.status).textContent = `loading ${what} from the tracker…`;
   sendCmd(cmd);
 }
-$('#maptracker').addEventListener('click', () => loadInto('d', { status: '#mapstatus', show: showMap }, 'the survey'));
+$('#maptracker').addEventListener('click', () => loadInto('d', {
+  status: '#mapstatus',
+  show: (text) => {
+    showMap(text);
+    loadInto('t', { status: '#mapstatus', show: showTrack }, 'the track');
+  },
+}, 'the survey'));
 $('#usetracker').addEventListener('click', () => loadInto('h', { status: '#usestatus', show: showUse }, 'the history'));
 $('#usefile').addEventListener('change', async (e) => {
   const f = e.target.files[0];
@@ -728,9 +767,12 @@ document.querySelectorAll('[data-colour]').forEach((b) => b.addEventListener('cl
   else drawLegend();
 }));
 drawLegend();
+// survey.csv and/or track.csv, told apart by their header
 $('#mapfile').addEventListener('change', async (e) => {
-  const f = e.target.files[0];
-  if (f) showMap(await f.text());
+  const texts = await Promise.all([...e.target.files].map((f) => f.text()));
+  const isTrack = (t) => t.startsWith('utc,lat,lon');
+  for (const t of texts.filter((t) => !isTrack(t))) await showMap(t);
+  for (const t of texts.filter(isTrack)) await showTrack(t);
   e.target.value = '';
 });
 document.querySelectorAll('[data-dl]').forEach((b) => b.addEventListener('click', () => {

@@ -48,6 +48,8 @@ using Adafruit_LittleFS_Namespace::FILE_O_WRITE;
                                  // loadSnapshot(), or the saved survey is dropped on upgrade.
 #define HISTORY_FILE "/history.csv"  // one row per meter per walk
 #define RAW_FILE "/raw.csv"          // raw telegrams of meters whose reading isn't decoded
+#define TRACK_FILE "/track.csv"      // where you walked: a point every TRACK_STEP_M metres
+#define TRACK_FLUSH_MS (15 * 60000UL)  // track points wait in RAM at most this long
 
 // ---------- hardware ----------
 SX1262 radio = new Module(SX126X_CS, SX126X_DIO1, SX126X_RESET, SX126X_BUSY);
@@ -470,6 +472,10 @@ struct LogFile {
 };
 LogFile historyLog = {HISTORY_FILE, HISTORY_HEADER};
 LogFile rawLog = {RAW_FILE, RAW_HEADER};
+// Not kept in the snapshots (it's only where you walked), so a power cut can lose the last
+// TRACK_FLUSH_MS of it; appending it that often costs the flash a few FAT updates per hour walked.
+LogFile trackLog = {TRACK_FILE, TRACK_HEADER};
+uint32_t trackPendingSince = 0;  // millis() of the oldest point not yet in track.csv
 
 bool flushLog(LogFile &lf) {
   if (!lf.len) return true;
@@ -625,9 +631,10 @@ bool saveSurveyQspi() {
 // full. Never while a computer has the drive: its view of the FAT would go stale.
 bool saveSurvey(bool flushLogs = false) {
   auto due = [&](const LogFile &lf) { return flushLogs || !ringOk || lf.len > sizeof(lf.buf) * 3 / 4; };
-  if (qspiOk && !driveToHost && (due(historyLog) || due(rawLog))) {
+  if (qspiOk && !driveToHost && (due(historyLog) || due(rawLog) || due(trackLog))) {
     flushLog(historyLog);
     flushLog(rawLog);
+    flushLog(trackLog);
     flash.syncBlocks();
   }
   bool ok;
@@ -909,6 +916,26 @@ void logHistory() {
   }
 }
 
+// A track point each time you've moved TRACK_STEP_M, with the same fix quality as positions.
+void logTrack() {
+  static int32_t lastLat, lastLon;
+  static bool have = false;
+  if (!qspiOk || !settings.gps || !gps.location.isValid() || gps.location.age() > GPS_MAX_AGE_MS) return;
+  if (gps.hdop.isValid() && gps.hdop.hdop() > GPS_MAX_HDOP) return;
+  uint32_t now = gpsEpoch();
+  if (!now) return;
+  int32_t lat = (int32_t)lround(gps.location.lat() * 1e7), lon = (int32_t)lround(gps.location.lng() * 1e7);
+  if (have && metresBetween(lastLat, lastLon, lat, lon) < TRACK_STEP_M) return;
+  char line[64];
+  size_t n = trackRow(line, sizeof(line) - 1, now, lat, lon);
+  strcpy(line + n, "\n");
+  if (!logLine(trackLog, line)) return;
+  if (trackLog.len == n + 1) trackPendingSince = millis();  // buffer was empty
+  lastLat = lat;
+  lastLon = lon;
+  have = true;
+}
+
 void handlePacket() {
   int16_t rssi = (int16_t)radio.getRSSI();
   int st = radio.readData(raw, sizeof(raw));
@@ -1076,7 +1103,7 @@ bool bleLinked() { return bleBegun && Bluefruit.connected(); }
 // Downloads (d/h/r from the phone): "# file <name>", the rows, "# end". Other log output is held
 // back meanwhile so it can't land inside the file.
 struct Download {
-  char kind;             // 0 = none, 'd' survey, 'h' history, 'r' raw
+  char kind;             // 0 = none, 'd' survey, 'h' history, 'r' raw, 't' track
   int next;              // d: next meter
   LogFile *log;          // h/r
   uint32_t size, off;    // h/r: file length when the download started, bytes sent
@@ -1100,8 +1127,10 @@ void startDownload(char kind) {
     txText("\n");
     return;
   }
-  dl.log = kind == 'h' ? &historyLog : &rawLog;
-  txText(kind == 'h' ? "# file history.csv\n" : "# file raw.csv\n");
+  dl.log = kind == 'h' ? &historyLog : kind == 't' ? &trackLog : &rawLog;
+  txText("# file ");
+  txText(dl.log->path + 1);  // without the leading '/'
+  txText("\n");
   File32 f = qspiOk ? fatfs.open(dl.log->path, O_RDONLY) : File32();
   if (f) {
     dl.size = f.fileSize();
@@ -1765,7 +1794,7 @@ size_t cmdLen = 0;
 
 void runCommand(char *c, bool fromBle = false) {
   // Dumps asked for by the phone stream a chunk at a time; on serial they print all at once.
-  if (fromBle && (!strcmp(c, "d") || !strcmp(c, "h") || !strcmp(c, "r"))) {
+  if (fromBle && (!strcmp(c, "d") || !strcmp(c, "h") || !strcmp(c, "r") || !strcmp(c, "t"))) {
     startDownload(c[0]);
   } else if (!strcmp(c, "d")) {
     Serial.println("# dump");
@@ -1825,15 +1854,19 @@ void runCommand(char *c, bool fromBle = false) {
   } else if (!strcmp(c, "r")) {
     printLog(rawLog);
     Serial.println("# end");
+  } else if (!strcmp(c, "t")) {
+    printLog(trackLog);
+    Serial.println("# end");
   } else if (!strcmp(c, "HCLEAR")) {
     if (driveToHost) {
       con.println("# unplug the USB drive first (or eject it and use a charger)");
       return;
     }
-    historyLog.len = rawLog.len = 0;
+    historyLog.len = rawLog.len = trackLog.len = 0;
     if (qspiOk) {
       fatfs.remove(HISTORY_FILE);
       fatfs.remove(RAW_FILE);
+      fatfs.remove(TRACK_FILE);
       flash.syncBlocks();
     }
     for (int i = 0; i < meterCount; i++) {
@@ -1841,7 +1874,7 @@ void runCommand(char *c, bool fromBle = false) {
       meters[i].rawThisSession = false;
     }
     surveyDirty = true;
-    con.println("# history and raw logs deleted");
+    con.println("# history, raw and track logs deleted");
   } else if (!strcmp(c, "FORMAT")) {
     driveToHost = false;
     delay(200);  // let any USB read in progress finish before erasing
@@ -1882,7 +1915,7 @@ void runCommand(char *c, bool fromBle = false) {
     con.printf("# key for %08lx: %s\n", (unsigned long)id, hexKey ? (l ? "set" : "NOT set") : "cleared");
   } else if (*c) {
     con.println("# commands: s=status  d=dump  c=clear survey  l <id> [label]  L=list labels  k <id> [hexkey]  h=history"
-                   "  r=raw telegrams  HCLEAR=delete history+raw  FORMAT=erase all");
+                   "  r=raw telegrams  t=track  HCLEAR=delete history+raw+track  FORMAT=erase all");
   }
 }
 
@@ -1975,6 +2008,8 @@ void loop() {
   if (now - lastLogCheck > 1000) {
     lastLogCheck = now;
     logHistory();
+    logTrack();
+    if (trackLog.len && now - trackPendingSince > TRACK_FLUSH_MS && flushLog(trackLog)) flash.syncBlocks();
   }
   handleUsbDrive();
   if (surveyDirty && (ringOk || !driveToHost) && now - lastSurveySave > (ringOk ? SURVEY_SAVE_MS : FALLBACK_SAVE_MS))

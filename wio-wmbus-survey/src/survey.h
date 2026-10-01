@@ -10,6 +10,7 @@
 
 #define MAX_SAMPLES 5                // strongest GPS-tagged receptions kept per meter
 #define LOG_INTERVAL_S (6 * 3600UL)  // a meter heard again within this counts as the same walk
+#define TRACK_STEP_M 15              // walk track: a point each time you've moved this far
 
 namespace survey {
 
@@ -188,6 +189,14 @@ inline bool estimatePosition(const Meter &m, double &lat, double &lon, float &sp
   return true;
 }
 
+// Distance in metres between two points in degrees * 1e7 (flat-earth, fine over a street).
+inline double metresBetween(int32_t lat1, int32_t lon1, int32_t lat2, int32_t lon2) {
+  const double mPerE7 = 0.011132;
+  double dy = (double)(lat2 - lat1) * mPerE7;
+  double dx = (double)(lon2 - lon1) * mPerE7 * cos((lat1 + lat2) / 2e7 * M_PI / 180.0);
+  return sqrt(dx * dx + dy * dy);
+}
+
 // ---------- names ----------
 // Diehl PRIOS frames don't carry a standard type byte, so decoded IZAR meters are "water".
 inline void typeNames(const Meter &m, const char *&shortName, const char *&longName) {
@@ -247,6 +256,7 @@ static const char SURVEY_HEADER[] =
 static const char HISTORY_HEADER[] =
     "utc,id,label,mfct,type,litres,billing_litres,billing_date,alarms,battery_years,rssi,serial";
 static const char RAW_HEADER[] = "utc,id,label,mode,mfct,type,rssi,telegram";
+static const char TRACK_HEADER[] = "utc,lat,lon";
 
 // Keeps appending after a truncated write without running past the end.
 struct Out {
@@ -337,6 +347,15 @@ inline size_t rawRow(char *out, size_t n, const Meter &m, const char *label, con
   o.f("%s,%08lx,%s,%s,%s,%s (%02x),%d,", ts, (unsigned long)m.id, label ? label : "", modeName(m), m.mfct, ln, m.type,
       m.lastRssi);
   for (size_t i = 0; i < t.len; i++) o.f("%02x", t.data[i]);
+  return o.len;
+}
+
+// track.csv row: where you were at `now`, lat/lon in degrees * 1e7 (5 decimals is ~1 m).
+inline size_t trackRow(char *out, size_t n, uint32_t now, int32_t lat, int32_t lon) {
+  Out o(out, n);
+  char ts[48];
+  isoUtc(now, ts, sizeof(ts));
+  o.f("%s,%.5f,%.5f", ts, lat / 1e7, lon / 1e7);
   return o.len;
 }
 

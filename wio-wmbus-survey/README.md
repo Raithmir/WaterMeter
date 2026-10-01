@@ -47,7 +47,7 @@ The phone page is at **https://raithmir.github.io/WaterMeter/wio-wmbus-survey/we
 - Device view: the tracker's screen live on a photo of the tracker; tap around the joystick to push it, its middle to press, and the user button. Plain view: a big screen with arrow buttons
 - Log: what the tracker prints on serial, with a box for serial commands
 - Files: downloads `survey.csv`, `history.csv` and `raw.csv` without a cable. The tracker keeps listening while it does
-- Map: every meter at its estimated position on OpenStreetMap, coloured by leak/alarm/labelled (Status) or litres per day since the last walk (Use), with a circle for its spread; tap one for its house, serial, reading, use, alarms and signal. "From tracker" loads the survey over Bluetooth; "Open survey.csv" takes the file from the USB drive and needs no Bluetooth (so any browser works, iPhone too). The map itself needs internet
+- Map: every meter at its estimated position on OpenStreetMap, coloured by leak/alarm/labelled (Status) or litres per day since the last walk (Use), with a circle for its spread; tap one for its house, serial, reading, use, alarms and signal. "From tracker" loads the survey and the walk track over Bluetooth; "Open files" takes `survey.csv` and/or `track.csv` from the USB drive and needs no Bluetooth (so any browser works, iPhone too). The track shows as blue lines, one per walk. The map itself needs internet
 - Usage: one meter's litres per day between walks, as a bar chart (tap a bar for its dates and litres) and a table of readings, with the average over all of them. Loads `history.csv` from the tracker or from a file, like the map. Rows within 6 hours count as one walk
 
 1. Settings → Bluetooth → on
@@ -93,9 +93,10 @@ Each meter keeps its 5 strongest GPS-tagged receptions. Only receptions with a f
 ## Files
 - `survey.csv`: one row per meter, latest state (same columns as the serial `d` dump, strongest meters first). IZAR meters also report `billing_litres` + `billing_date` (the reading the meter stored on the billing date the water company set, 31 Dec on ours, so reading − billing = use since then; blank until a new meter reaches its first billing date; wmbusmeters calls these "last month"), `battery_years` left and `period_s` between broadcasts. `used_litres`, `used_days` and `litres_per_day` are the use since the meter's last walk, as on the detail view (blank until its second walk). `serial` is the number printed on the meter (e.g. `H25XA036488`, see [Printed serial numbers](#printed-serial-numbers-izar)); only Sappel-made IZAR meters (manufacturer `SAP`) carry it, so it's blank for the rest.
 - `history.csv`: one row per meter per walk: `utc,id,label,mfct,type,litres,billing_litres,billing_date,alarms,battery_years,rssi,serial` (files started before these were renamed keep the old `last_month_*` header names; the columns are the same. Files started before `serial` was added keep their header without it, and newer rows have it as an extra last column). A meter heard again within 6 h counts as the same walk, even across a power cycle; an alarm change always adds a row. Rows need GPS time, so meters heard before the first fix are logged when it arrives, stamped with that time.
+- `track.csv`: where you walked, `utc,lat,lon`, a point every 15 m (`TRACK_STEP_M`) while the GPS has a good fix. Points wait in RAM and are appended at most 15 minutes later (or when a computer is plugged in), so a power cut can lose the last few minutes of it.
 - `raw.csv`: for meters whose reading isn't decoded, one raw telegram per walk (hex, CRCs removed, the form wmbusmeters accepts), with the radio mode. Before a GPS fix the time is left blank.
 
-Rows are collected in RAM (and saved in the survey snapshots) and appended to the files when a computer is plugged in. Around 50 houses walked weekly is ~150 KB of history a year; the ~1 MB left beside `state.bin` holds about six years of that.
+History and raw rows are collected in RAM (and saved in the survey snapshots) and appended to the files when a computer is plugged in. Around 50 houses walked weekly is ~150 KB of history a year, and a 1 km walk adds ~2.6 KB of track (~135 KB a year weekly); the ~1 MB left beside `state.bin` holds three to four years of both. `HCLEAR` starts afresh.
 
 ## Printed serial numbers (IZAR)
 Sappel-made IZAR meters (manufacturer `SAP`) don't broadcast a separate serial number. Their printed number is packed into the radio address, so the tracker works it out from the header, the same way wmbusmeters' `izar` driver does. It appears in `survey.csv`, `history.csv`, the `d` dump and on the meter's detail screen. Other meters leave it blank.
@@ -134,8 +135,8 @@ The same commands work from the command box on the phone page.
 - `s` status: build date, QSPI flash, save ring, USB drive, battery, frame counters, GPS reception (sentences ok/bad, fix age, HDOP), Bluetooth and settings
 - `d` dump table as CSV (label, printed serial, mode T1/C1a/C1b, manufacturer, type, reading, alarms, UTC, lat, lon, spread)
 - `c` clear survey (labels and history kept)
-- `h` print history.csv, `r` print raw.csv (not while a computer has the drive: open the files there)
-- `HCLEAR` delete history.csv and raw.csv
+- `h` print history.csv, `r` print raw.csv, `t` print track.csv (not while a computer has the drive: open the files there)
+- `HCLEAR` delete history.csv, raw.csv and track.csv
 - `l <id> <label>` set label, e.g. `l 1a2b3c4d 12A`; `l <id>` removes it (a stored key is kept)
 - `L` list labels (`,key` = meter has an AES key)
 - `k <id> <32 hex digits>` set a meter's AES key (e.g. a Sensus with a non-default key); `k <id>` clears it

@@ -406,6 +406,20 @@ static void testConvertV3() {
   printf("format 3 conversion ok\n");
 }
 
+static void testTrack() {
+  char row[64];
+  trackRow(row, sizeof(row), 1790172312UL, 515012345, -1410000);
+  CHECK(std::string(row) == "2026-09-23T14:05:12Z,51.50123,-0.14100");
+  CHECK(columns(row) == columns(TRACK_HEADER));
+  trackRow(row, sizeof(row), 1790172312UL, -335000000, 1512345678);
+  CHECK(std::string(row) == "2026-09-23T14:05:12Z,-33.50000,151.23457");
+  // 0.0001 degree of latitude is 11.1 m; of longitude at 51.5 N, 6.9 m
+  CHECK(fabs(metresBetween(515000000, -1000000, 515001000, -1000000) - 11.13) < 0.05);
+  CHECK(fabs(metresBetween(515000000, -1000000, 515000000, -999000) - 6.93) < 0.05);
+  CHECK(metresBetween(515000000, -1000000, 515000000, -1000000) == 0);
+  printf("track ok\n");
+}
+
 int main() {
   testRing();
   testTime();
@@ -414,6 +428,7 @@ int main() {
   testHistoryDue();
   testUsage();
   testConvertV3();
+  testTrack();
   printf(fails ? "%d FAILED\n" : "ALL PASS\n", fails);
   return fails ? 1 : 0;
 }
