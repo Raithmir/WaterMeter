@@ -326,7 +326,7 @@ function setFileButtons(on) {
 }
 
 // ---- map: survey.csv rows at their estimated positions (Leaflet, loaded when first needed) ----
-let map = null, mapLayer = null;
+let map = null, mapLayer = null, dots = null;
 let leaflet = null;  // the loading promise, so two callers don't add it twice
 function loadLeaflet() {
   if (!leaflet) leaflet = addLeaflet().catch((e) => { leaflet = null; throw e; });
@@ -396,10 +396,14 @@ async function ensureMap() {
     return false;
   }
   if (!map) {
-    map = L.map('map');
+    map = L.map('map', { maxZoom: 22 });
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19, attribution: '&copy; OpenStreetMap contributors',
+      maxZoom: 22, maxNativeZoom: 19, attribution: '&copy; OpenStreetMap contributors',  // past 19: tiles scaled up
     }).addTo(map);
+    // Meter dots in their own pane above the spread circles and track, drawn on a canvas that
+    // takes taps up to 10 px outside a dot (an easier target on a phone).
+    map.createPane('dots').style.zIndex = 450;
+    dots = L.canvas({ pane: 'dots', tolerance: 10 });
     trackLayer = L.layerGroup().addTo(map);  // under the meters
     mapLayer = L.layerGroup().addTo(map);
   }
@@ -420,12 +424,25 @@ async function showTrack(text) {
     walks[walks.length - 1].push(ll);
     last = t;
   }
-  for (const w of walks) L.polyline(w, { color: '#58a6ff', weight: 3, opacity: 0.7 }).addTo(trackLayer);
+  for (const w of walks) L.polyline(w, { color: '#58a6ff', weight: 3, opacity: 0.7, interactive: false }).addTo(trackLayer);
   const pts = walks.flat();
   trackInfo = pts.length ? `, track of ${walks.length} walk${walks.length > 1 ? 's' : ''}` : '';
   if (!mapText && pts.length) map.fitBounds(pts, { padding: [24, 24], maxZoom: 19 });
   if (!mapText) $('#mapstatus').textContent = pts.length ? `Track of ${walks.length} walks.` : 'The track is empty.';
   else showMap(mapText, false);
+}
+
+// A tap can land within reach of several dots: open the one nearest to it (the canvas would
+// pick whichever was drawn last).
+function openNearestDot(e) {
+  const tap = map.mouseEventToContainerPoint(e.originalEvent);  // e.containerPoint is the dot's centre
+  let best = null, bestDist = Infinity;
+  mapLayer.eachLayer((l) => {
+    if (!l.options.html) return;
+    const d = tap.distanceTo(map.latLngToContainerPoint(l.getLatLng()));
+    if (d < bestDist) [best, bestDist] = [l, d];
+  });
+  map.openPopup(best.options.html, best.getLatLng(), { offset: [0, -4] });
 }
 
 async function showMap(text, refit = true) {
@@ -459,10 +476,11 @@ async function showMap(text, refit = true) {
       `<br>best ${esc(r.best_rssi)} dBm, ${esc(r.samples)} fixes ±${Math.round(r.spread_m)} m` +
       (r.utc ? `<br>heard ${esc(r.utc.replace('T', ' ').replace('Z', ' UTC'))}` : '') +
       (r.litres ? `<br><a href="#" data-use="${esc(r.id)}">Usage chart →</a>` : '');
-    L.circle(ll, { radius: Math.max(parseFloat(r.spread_m) || 0, 2), color, weight: 1, fillOpacity: 0.12 })
+    L.circle(ll, { radius: Math.max(parseFloat(r.spread_m) || 0, 2), color, weight: 1, fillOpacity: 0.12,
+      interactive: false })
       .addTo(mapLayer);
-    L.circleMarker(ll, { radius: 6, color: '#0d1117', weight: 1, fillColor: color, fillOpacity: 1 })
-      .bindPopup(html).bindTooltip(esc(r.label || r.id.slice(-4)), { direction: 'top', offset: [0, -6] })
+    L.circleMarker(ll, { radius: 6, color: '#0d1117', weight: 1, fillColor: color, fillOpacity: 1, renderer: dots, html })
+      .on('click', openNearestDot).bindTooltip(esc(r.label || r.id.slice(-4)), { direction: 'top', offset: [0, -6] })
       .addTo(mapLayer);
   }
   if (refit && pts.length) map.fitBounds(pts, { padding: [24, 24], maxZoom: 19 });
