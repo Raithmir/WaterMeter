@@ -362,12 +362,14 @@ const STATUS = [['#f85149', 'leaking now'], ['#d29922', 'other alarm'], ['#3fb95
 const USE = [[200, '#3fb950', 'under 200 l/day'], [500, '#d29922', '200–500'], [1000, '#f0883e', '500–1000'],
   [Infinity, '#f85149', 'over 1000'], [null, '#8b949e', 'not known yet']];
 let colourBy = 'status', mapText = null;
+// survey.csv says "ok" when a meter reports no alarms (empty = no reading yet).
+const alarmsOf = (r) => (r.alarms && r.alarms !== 'ok' ? r.alarms : '');
 function markerColour(r) {
   if (colourBy === 'use') {
     if (r.litres_per_day === '' || r.litres_per_day === undefined) return USE[4][1];
     return USE.find((u) => u[0] !== null && parseFloat(r.litres_per_day) < u[0])[1];
   }
-  const alarms = r.alarms || '';
+  const alarms = alarmsOf(r);
   return /LEAK/.test(alarms) ? STATUS[0][0] : alarms ? STATUS[1][0] : r.label ? STATUS[2][0] : STATUS[3][0];
 }
 function drawLegend() {
@@ -425,7 +427,7 @@ async function showMap(text, refit = true) {
   const pts = [];
   for (const r of rows) {
     const ll = [parseFloat(r.lat), parseFloat(r.lon)];
-    const alarms = r.alarms || '';
+    const alarms = alarmsOf(r);
     const color = markerColour(r);
     const use = r.used_litres ? `<br>used ${esc(r.used_litres)} l in ${esc(r.used_days)} days ` +
       `(${esc(r.litres_per_day)} l/day)` : '';
