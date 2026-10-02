@@ -17,6 +17,19 @@ There are two stages, each with its own firmware (the program that runs on the b
 
 The same board does both jobs: install the survey first, then replace it with the gateway.
 
+### Wio Tracker L1 survey
+
+There's also a separate, more capable survey for the **Seeed Wio Tracker L1 Pro**, a handheld with a screen, joystick, GPS and battery. Walk around with it and it records every wM-Bus meter it hears, of any brand, with its position:
+
+- Readings and leak alarms for Diehl IZAR meters, and a house label you set for each meter
+- A hunt page that beeps faster as you get closer to a meter, to find which house it belongs to
+- Results saved across walks, with water used per day between walks
+- A **[phone page](https://raithmir.github.io/WaterMeter/wio-wmbus-survey/web/)** over Bluetooth: control the tracker, download its files, see every meter on a map, and chart a meter's use
+
+To install it, download `wio-tracker-survey.uf2` from the [latest release](https://github.com/Raithmir/WaterMeter/releases/latest), double-tap the tracker's reset button so it shows up as a USB drive, and copy the file onto it. This replaces Meshtastic, which you can put back any time from [flasher.meshtastic.org](https://flasher.meshtastic.org).
+
+Full instructions: **[`wio-wmbus-survey`](wio-wmbus-survey/)**.
+
 ## What you need
 
 - **A radio board.** Either:
@@ -32,7 +45,7 @@ The same board does both jobs: install the survey first, then replace it with th
 - **A 2.4 GHz Wi-Fi network.** The boards can't use 5 GHz. Most home routers offer both bands, often under the same network name, so this usually just works.
 - **For the gateway: Home Assistant**, with the ESPHome Device Builder add-on installed. See [Step 2](#step-2-set-up-the-gateway).
 
-Have a Seeed Wio Tracker L1 instead? It has its own survey firmware with a screen, GPS and saved results: see [`wio-wmbus-survey`](wio-wmbus-survey/).
+Have a Seeed Wio Tracker L1 instead? It has its own survey firmware: see [Wio Tracker L1 survey](#wio-tracker-l1-survey).
 
 ## Step 1: Find your meter ID
 

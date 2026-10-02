@@ -7,6 +7,10 @@ The table (up to 512 meters) is saved to the 2 MB QSPI flash and house labels to
 <img width="3064" height="4080" alt="PXL_20260926_064600662" src="https://github.com/user-attachments/assets/59fe5693-1595-4612-be4a-9b03093528a0" />
 
 ## Build / flash
+Ready-made: download `wio-tracker-survey.uf2` from the [latest release](https://github.com/Raithmir/WaterMeter/releases/latest), double-tap reset → a USB drive appears → copy the file onto it.
+
+From source:
+
     pio run
 Double-tap reset → a USB drive appears → copy `.pio/build/wio_tracker_l1/firmware.uf2` onto it.
 (or: `pio run -t upload`)
