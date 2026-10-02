@@ -108,24 +108,6 @@ Adafruit_USBD_MSC usbDrive;
 // ---------- state ----------
 using namespace survey;
 
-// Survey format 2 (previous builds), converted on load.
-struct MeterV2 {
-  uint32_t id;
-  char mfct[4];
-  uint8_t ver, type;
-  uint8_t mode;
-  uint16_t alarms;
-  uint32_t litres;
-  bool hasLitres;
-  int16_t lastRssi, bestRssi;
-  uint16_t count;
-  uint32_t utc;
-  uint8_t nSamples;
-  Sample samples[MAX_SAMPLES];
-  uint32_t lastSeen;
-  bool thisSession;
-};
-
 // House label and/or AES key for one meter. An entry can hold just a key (empty text).
 struct Label {
   uint32_t id;
@@ -179,11 +161,6 @@ const char *const SCREEN_OFF_NAMES[] = {"30 s", "1 min", "2 min", "5 min", "neve
 const int N_SCREEN_OFF = sizeof(SCREEN_OFF_CHOICES) / sizeof(SCREEN_OFF_CHOICES[0]);
 enum { SHOW_ALL, SHOW_NOT_HEARD, SHOW_UNLABELLED, N_SHOW };
 const char *const SHOW_NAMES[] = {"all", "not heard", "unlabelled"};
-struct SettingsV1 {
-  bool ble, gps;
-  uint8_t screenOff;
-  bool beeps, sortByRssi;
-};
 struct Settings {
   bool ble;           // Bluetooth link to the phone page
   bool gps;           // off = GPS module in standby (saves power, no positions)
@@ -417,45 +394,13 @@ const uint32_t MAGIC_SURVEY = 0x53525659;  // "SRVY"
 const uint32_t MAGIC_LABELS = 0x4C41424C;  // "LABL"
 const uint32_t MAGIC_SETTINGS = 0x53455447;  // "SETG"
 
-// Current format, or format 2 converted field by field.
 template <typename F>
 int readSurvey(F &f) {
   FileHeader h;
-  if (f.read(&h, sizeof(h)) != sizeof(h) || h.magic != MAGIC_SURVEY || h.count > MAX_METERS) return 0;
-  if (h.version == SURVEY_VERSION && f.size() == sizeof(h) + sizeof(Meter) * h.count)
-    return f.read(meters, sizeof(Meter) * h.count) == (int)(sizeof(Meter) * h.count) ? h.count : 0;
-  if (h.version == 3 && f.size() == sizeof(h) + sizeof(MeterV3) * h.count) {
-    for (int i = 0; i < h.count; i++) {
-      MeterV3 o;
-      if (f.read(&o, sizeof(o)) != sizeof(o)) return 0;
-      convertV3(o, meters[i]);
-    }
-    con.printf("# converted survey from format 3 (%d meters)\n", h.count);
-    return h.count;
-  }
-  if (h.version != 2 || f.size() != sizeof(h) + sizeof(MeterV2) * h.count) return 0;
-  for (int i = 0; i < h.count; i++) {
-    MeterV2 o;
-    if (f.read(&o, sizeof(o)) != sizeof(o)) return 0;
-    Meter &m = meters[i];
-    memset(&m, 0, sizeof(m));
-    m.id = o.id;
-    memcpy(m.mfct, o.mfct, sizeof(m.mfct));
-    m.ver = o.ver;
-    m.type = o.type;
-    m.mode = o.mode;
-    m.alarms = o.alarms;
-    m.litres = o.litres;
-    m.hasLitres = o.hasLitres;
-    m.lastRssi = o.lastRssi;
-    m.bestRssi = o.bestRssi;
-    m.count = o.count;
-    m.utc = o.utc;
-    m.nSamples = o.nSamples;
-    memcpy(m.samples, o.samples, sizeof(m.samples));
-  }
-  con.printf("# converted survey from format 2 (%d meters)\n", h.count);
-  return h.count;
+  if (f.read(&h, sizeof(h)) != sizeof(h) || h.magic != MAGIC_SURVEY || h.version != SURVEY_VERSION ||
+      h.count > MAX_METERS || f.size() != sizeof(h) + sizeof(Meter) * h.count)
+    return 0;
+  return f.read(meters, sizeof(Meter) * h.count) == (int)(sizeof(Meter) * h.count) ? h.count : 0;
 }
 
 void printCsvHeader(Print &out);
@@ -582,16 +527,6 @@ int loadSnapshot() {
   auto damaged = [](uint32_t seq) { con.printf("# snapshot %lu damaged, trying an older one\n", (unsigned long)seq); };
   snapring::Contents c = snapContents();
   int n = ring.load(SURVEY_VERSION, c, damaged);
-  if (n < 0) {
-    // Format 3 from an older build: its smaller records fit in meters[] and are converted there.
-    c.itemSize = sizeof(MeterV3);
-    n = ring.load(3, c, damaged);
-    if (n >= 0) {
-      convertV3InPlace(meters, n);
-      con.printf("# converted survey from format 3 (%d meters)\n", n);
-      surveyDirty = true;
-    }
-  }
   historyLog.len = c.aLen;
   rawLog.len = c.bLen;
   return n;
@@ -663,13 +598,7 @@ void saveSettings() {
 // Defaults stay if there is no file (or one from another settings version).
 void loadSettings() {
   Settings s;
-  SettingsV1 o;
   if (loadFile(SETTINGS_FILE, MAGIC_SETTINGS, FILE_VERSION_SETTINGS, &s, sizeof(s), 1) == 1) settings = s;
-  else if (loadFile(SETTINGS_FILE, MAGIC_SETTINGS, 1, &o, sizeof(o), 1) == 1) {
-    settings = {o.ble, o.gps, o.screenOff, o.beeps, o.sortByRssi, SHOW_ALL};
-    settingsDirty = true;  // saved in the new format straight away, so the conversion can go one day
-    lastSettingsEdit = millis();
-  }
   if (settings.screenOff >= N_SCREEN_OFF) settings.screenOff = 2;
   if (settings.show >= N_SHOW) settings.show = SHOW_ALL;
 }

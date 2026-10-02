@@ -363,49 +363,6 @@ static void testUsage() {
   printf("usage ok\n");
 }
 
-// Format 3 records loaded back to back into meters[] keep every field when converted in place.
-static void testConvertV3() {
-  const int N = 40;
-  static Meter meters[N];
-  std::vector<MeterV3> old(N);
-  const uint32_t t0 = 1790172312UL;
-  for (int i = 0; i < N; i++) {
-    MeterV3 &o = old[i];
-    memset(&o, 0, sizeof(o));
-    o.id = 0x21000000 + i;
-    memcpy(o.mfct, "SAP", 4);
-    o.litres = 1000 * i + 7;
-    o.hasLitres = i % 3 != 0;
-    o.lastRssi = -60 - i;
-    o.bestRssi = -50;
-    o.nSamples = 2;
-    o.samples[1] = {515000000 + i, -1000000 - i, (int16_t)(-70 - i)};
-    o.utc = t0 + i;
-    o.periodS = 32;
-    o.loggedUtc = i % 2 ? t0 : t0 - 7 * 86400;  // odd: logged on the walk of the latest reading
-    o.loggedAlarms = (uint16_t)i;
-    o.rawLoggedUtc = t0 - 5;
-    o.lastSeen = 12345;
-    o.thisSession = true;
-  }
-  memset(meters, 0xAA, sizeof(meters));
-  memcpy(meters, old.data(), N * sizeof(MeterV3));
-  convertV3InPlace(meters, N);
-  bool ok = true;
-  for (int i = 0; i < N; i++) {
-    const Meter &m = meters[i];
-    const MeterV3 &o = old[i];
-    ok &= m.id == o.id && !strcmp(m.mfct, "SAP") && m.litres == o.litres && m.hasLitres == o.hasLitres &&
-          m.lastRssi == o.lastRssi && m.utc == o.utc && m.samples[1].lat == o.samples[1].lat &&
-          m.samples[1].rssi == o.samples[1].rssi && m.periodS == 32 && m.loggedUtc == o.loggedUtc &&
-          m.loggedAlarms == o.loggedAlarms && m.rawLoggedUtc == o.rawLoggedUtc;
-    ok &= m.lastSeen == 0 && !m.thisSession && m.baseLitres == 0 && m.baseUtc == 0;
-    ok &= m.loggedLitres == (o.hasLitres && i % 2 ? o.litres : 0);
-  }
-  CHECK(ok);
-  printf("format 3 conversion ok\n");
-}
-
 static void testTrack() {
   char row[64];
   trackRow(row, sizeof(row), 1790172312UL, 515012345, -1410000);
@@ -427,7 +384,6 @@ int main() {
   testCsv();
   testHistoryDue();
   testUsage();
-  testConvertV3();
   testTrack();
   printf(fails ? "%d FAILED\n" : "ALL PASS\n", fails);
   return fails ? 1 : 0;

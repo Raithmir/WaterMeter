@@ -56,53 +56,6 @@ struct Meter {
 // conversion in main.cpp's loadSnapshot(), then updating this size.
 static_assert(sizeof(Meter) == 144, "Meter layout changed: see comment above");
 
-// Survey format 3 (previous builds), converted on load. Same as Meter up to rawLoggedUtc.
-struct MeterV3 {
-  uint32_t id;
-  char mfct[4];
-  uint8_t ver, type;
-  uint8_t mode;
-  uint16_t alarms;
-  uint32_t litres;
-  bool hasLitres;
-  int16_t lastRssi, bestRssi;
-  uint16_t count;
-  uint32_t utc;
-  uint8_t nSamples;
-  Sample samples[MAX_SAMPLES];
-  bool hasIzarInfo;
-  uint8_t battHalfYears;
-  uint32_t periodS;
-  uint32_t billingLitres;
-  uint32_t billingDate;
-  uint32_t loggedUtc;
-  uint16_t loggedAlarms;
-  uint32_t rawLoggedUtc;
-  uint32_t lastSeen;
-  bool thisSession, heardSinceLog, rawThisSession;
-};
-static_assert(sizeof(MeterV3) == 132, "format 3 is on the flash: don't change it");
-static_assert(offsetof(Meter, loggedLitres) == offsetof(MeterV3, lastSeen), "Meter must extend MeterV3");
-
-// The last row's reading wasn't kept, but if the latest reading is from the same walk it's
-// near enough, so the use shows from the next walk.
-inline void convertV3(const MeterV3 &o, Meter &m) {
-  memset(&m, 0, sizeof(m));
-  memcpy(&m, &o, offsetof(MeterV3, lastSeen));
-  if (m.hasLitres && m.loggedUtc && m.utc < m.loggedUtc + LOG_INTERVAL_S) m.loggedLitres = m.litres;
-}
-
-// meters[] holding n format 3 records back to back (as a snapshot loads them): converted where
-// they are, from the last one back, so none is overwritten before it's moved.
-inline void convertV3InPlace(Meter *meters, int n) {
-  static_assert(sizeof(MeterV3) <= sizeof(Meter), "converting in place needs the old records smaller");
-  for (int i = n - 1; i >= 0; i--) {
-    MeterV3 o;
-    memcpy(&o, (uint8_t *)meters + i * sizeof(MeterV3), sizeof(o));
-    convertV3(o, meters[i]);
-  }
-}
-
 // ---------- time ----------
 // Seconds since 1970 (days from civil, Howard Hinnant).
 inline uint32_t epochFromCivil(int y, int m, int d, int hh, int mm, int ss) {
