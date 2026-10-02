@@ -358,7 +358,8 @@ function parseCsv(text) {
 const esc = (v) => String(v).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
 
 // Marker colours: by status, or by litres per day since the last walk.
-const STATUS = [['#f85149', 'leaking now'], ['#d29922', 'other alarm'], ['#3fb950', 'labelled'], ['#8b949e', 'unlabelled']];
+const STATUS = [['#f85149', 'leaking now'], ['#d29922', 'other alarm'], ['#a371f7', 'no reading'], ['#3fb950', 'labelled'],
+  ['#8b949e', 'unlabelled']];
 const USE = [[200, '#3fb950', 'under 200 l/day'], [500, '#d29922', '200–500'], [1000, '#f0883e', '500–1000'],
   [Infinity, '#f85149', 'over 1000'], [null, '#8b949e', 'not known yet']];
 let colourBy = 'status', mapText = null;
@@ -370,7 +371,9 @@ function markerColour(r) {
     return USE.find((u) => u[0] !== null && parseFloat(r.litres_per_day) < u[0])[1];
   }
   const alarms = alarmsOf(r);
-  return /LEAK/.test(alarms) ? STATUS[0][0] : alarms ? STATUS[1][0] : r.label ? STATUS[2][0] : STATUS[3][0];
+  // no reading: heard but not decoded (e.g. an encrypted Sensus meter without its key)
+  const i = /LEAK/.test(alarms) ? 0 : alarms ? 1 : !r.litres ? 2 : r.label ? 3 : 4;
+  return STATUS[i][0];
 }
 function drawLegend() {
   const items = colourBy === 'use' ? USE.map((u) => [u[1], u[2]]) : STATUS;
