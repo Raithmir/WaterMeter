@@ -93,6 +93,8 @@
   #map { height: 380px; margin-top: 10px; border-radius: 8px; background: var(--bg); }
   .leaflet-popup-content { font-size: 13px; line-height: 1.4; }
   .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .legend button { font: inherit; color: inherit; background: none; border: 0; padding: 4px 0; border-radius: 0; }
+  .legend button[aria-pressed="false"] { opacity: .45; text-decoration: line-through; }
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
   select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
     padding: 8px 10px; margin-top: 10px; width: 100%; }
@@ -193,7 +195,8 @@
   <div id="map"></div>
   <div class="legend" id="legend"></div>
   <p class="note" id="mapstatus">Each meter at its estimated position; the circle is its spread (how far apart
-    the receptions it's worked out from were); the blue lines are where you walked. Tap a meter for details.
+    the receptions it's worked out from were); the blue lines are where you walked. Tap a meter for details,
+    or a legend entry to hide or show those meters.
     "Open files" takes survey.csv and track.csv (pick both) off the tracker's USB drive, no Bluetooth needed.</p>
 </section>
 
@@ -357,27 +360,32 @@ function parseCsv(text) {
 
 const esc = (v) => String(v).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
 
-// Marker colours: by status, or by litres per day since the last walk.
-const STATUS = [['#f85149', 'leaking now'], ['#d29922', 'other alarm'], ['#a371f7', 'no reading'], ['#3fb950', 'labelled'],
+// Marker colours: by status, or by litres per day since the last walk. "No reading" = heard but
+// not decoded (e.g. a Sensus meter without its key), the same colour in both.
+const NO_READING = ['#a371f7', 'no reading'];
+const STATUS = [['#f85149', 'leaking now'], ['#d29922', 'other alarm'], NO_READING, ['#3fb950', 'labelled'],
   ['#8b949e', 'unlabelled']];
-const USE = [[200, '#3fb950', 'under 200 l/day'], [500, '#d29922', '200–500'], [1000, '#f0883e', '500–1000'],
-  [Infinity, '#f85149', 'over 1000'], [null, '#8b949e', 'not known yet']];
+const USE_MAX = [200, 500, 1000, Infinity];  // l/day, upper bound of each USE entry
+const USE = [['#3fb950', 'under 200 l/day'], ['#d29922', '200–500'], ['#f0883e', '500–1000'], ['#f85149', 'over 1000'],
+  NO_READING, ['#8b949e', 'not known yet']];
 let colourBy = 'status', mapText = null;
+const hidden = { status: new Set(), use: new Set() };  // legend entries tapped off, per colouring
 // survey.csv says "ok" when a meter reports no alarms (empty = no reading yet).
 const alarmsOf = (r) => (r.alarms && r.alarms !== 'ok' ? r.alarms : '');
-function markerColour(r) {
+// Index of the meter's legend entry.
+function markerKind(r) {
   if (colourBy === 'use') {
-    if (r.litres_per_day === '' || r.litres_per_day === undefined) return USE[4][1];
-    return USE.find((u) => u[0] !== null && parseFloat(r.litres_per_day) < u[0])[1];
+    const lpd = parseFloat(r.litres_per_day);
+    return !r.litres ? 4 : isNaN(lpd) ? 5 : USE_MAX.findIndex((m) => lpd < m);
   }
   const alarms = alarmsOf(r);
-  // no reading: heard but not decoded (e.g. an encrypted Sensus meter without its key)
-  const i = /LEAK/.test(alarms) ? 0 : alarms ? 1 : !r.litres ? 2 : r.label ? 3 : 4;
-  return STATUS[i][0];
+  return /LEAK/.test(alarms) ? 0 : alarms ? 1 : !r.litres ? 2 : r.label ? 3 : 4;
 }
+const legendItems = () => (colourBy === 'use' ? USE : STATUS);
 function drawLegend() {
-  const items = colourBy === 'use' ? USE.map((u) => [u[1], u[2]]) : STATUS;
-  $('#legend').innerHTML = items.map(([c, t]) => `<span><i style="background:${c}"></i>${t}</span>`).join('');
+  const off = hidden[colourBy];
+  $('#legend').innerHTML = legendItems().map(([c, t], i) =>
+    `<button data-kind="${i}" aria-pressed="${!off.has(i)}"><i style="background:${c}"></i>${t}</button>`).join('');
 }
 
 async function ensureMap() {
@@ -428,16 +436,26 @@ async function showMap(text, refit = true) {
   mapLayer.clearLayers();
   const rows = parseCsv(text).filter((r) => r.lat && r.lon);
   const pts = [];
+  let nHidden = 0;
   for (const r of rows) {
     const ll = [parseFloat(r.lat), parseFloat(r.lon)];
     const alarms = alarmsOf(r);
-    const color = markerColour(r);
+    const kind = markerKind(r);
+    pts.push(ll);  // the view fits every meter, shown or not
+    if (hidden[colourBy].has(kind)) {
+      nHidden++;
+      continue;
+    }
+    const color = legendItems()[kind][0];
     const use = r.used_litres ? `<br>used ${esc(r.used_litres)} l in ${esc(r.used_days)} days ` +
       `(${esc(r.litres_per_day)} l/day)` : '';
     const m3 = r.litres ? (parseInt(r.litres, 10) / 1000).toFixed(3) + ' m³' : `${r.mfct} ${r.type}`;
+    const noReading = r.litres ? '' : '<br><i>No reading: ' + (r.mfct === 'SEN'
+      ? 'encrypted with its own key (set it with <code>k</code> on the tracker)'
+      : 'the tracker can\'t decode this meter') + '. Its telegrams are in raw.csv.</i>';
     const html = `<b>${r.label ? 'House ' + esc(r.label) : esc(r.id)}</b>` +
       (r.label ? `<br>${esc(r.id)}` : '') + (r.serial ? `<br>${esc(r.serial)}` : '') +
-      `<br>${esc(m3)}` + use + (alarms ? `<br><b>${esc(alarms)}</b>` : '') +
+      `<br>${esc(m3)}` + noReading + use + (alarms ? `<br><b>${esc(alarms)}</b>` : '') +
       `<br>best ${esc(r.best_rssi)} dBm, ${esc(r.samples)} fixes ±${Math.round(r.spread_m)} m` +
       (r.utc ? `<br>heard ${esc(r.utc.replace('T', ' ').replace('Z', ' UTC'))}` : '') +
       (r.litres ? `<br><a href="#" data-use="${esc(r.id)}">Usage chart →</a>` : '');
@@ -446,14 +464,13 @@ async function showMap(text, refit = true) {
     L.circleMarker(ll, { radius: 6, color: '#0d1117', weight: 1, fillColor: color, fillOpacity: 1 })
       .bindPopup(html).bindTooltip(esc(r.label || r.id.slice(-4)), { direction: 'top', offset: [0, -6] })
       .addTo(mapLayer);
-    pts.push(ll);
   }
   if (refit && pts.length) map.fitBounds(pts, { padding: [24, 24], maxZoom: 19 });
   else if (refit) map.setView([54, -2], 5);
   setTimeout(() => map.invalidateSize(), 0);
   status.textContent = `${pts.length} meters with a position` +
     (rows.length < parseCsv(text).length ? ` (${parseCsv(text).length - rows.length} without one yet)` : '') +
-    trackInfo + '.';
+    (nHidden ? `, ${nHidden} hidden` : '') + trackInfo + '.';
 }
 
 // ---- usage: one meter's litres per day between walks, from history.csv ----
@@ -814,6 +831,15 @@ document.querySelectorAll('[data-colour]').forEach((b) => b.addEventListener('cl
   else drawLegend();
 }));
 drawLegend();
+// Tap a legend entry to hide or show those meters.
+$('#legend').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-kind]');
+  if (!b) return;
+  const off = hidden[colourBy], i = Number(b.dataset.kind);
+  if (!off.delete(i)) off.add(i);
+  if (mapText) showMap(mapText, false);
+  else drawLegend();
+});
 $('#map').addEventListener('click', (e) => {
   const a = e.target.closest('[data-use]');
   if (!a) return;
