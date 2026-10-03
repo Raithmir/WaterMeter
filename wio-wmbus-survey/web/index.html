@@ -187,7 +187,11 @@
   <div class="row">
     <button id="maptracker">From tracker</button>
     <label class="button">Open files<input type="file" id="mapfile" accept=".csv,text/csv" multiple hidden></label>
-    <span class="views" role="group" aria-label="Colour by" style="margin:0 0 0 auto">
+    <span class="views" role="group" aria-label="Track" style="margin:0 0 0 auto">
+      <button data-walks="last" aria-pressed="true">Last walk</button>
+      <button data-walks="all" aria-pressed="false">All walks</button>
+    </span>
+    <span class="views" role="group" aria-label="Colour by" style="margin:0">
       <button data-colour="status" aria-pressed="true">Status</button>
       <button data-colour="use" aria-pressed="false">Use</button>
     </span>
@@ -195,7 +199,7 @@
   <div id="map"></div>
   <div class="legend" id="legend"></div>
   <p class="note" id="mapstatus">Each meter at its estimated position; the circle is its spread (how far apart
-    the receptions it's worked out from were); the blue lines are where you walked. Tap a meter for details,
+    the receptions it's worked out from were); the blue lines are where you walked (the last walk, or all of them). Tap a meter for details,
     or a legend entry to hide or show those meters.
     "Open files" takes survey.csv and track.csv (pick both) off the tracker's USB drive, no Bluetooth needed.</p>
 </section>
@@ -410,12 +414,11 @@ async function ensureMap() {
   return true;
 }
 
-// track.csv: one line per walk (a gap of over 10 minutes starts a new one).
-let trackLayer = null, trackInfo = '';
+// track.csv: one line per walk (a gap of over 10 minutes starts a new one), the last walk or all.
+let trackLayer = null, trackInfo = '', walks = [], showWalks = 'last';
 async function showTrack(text) {
   if (!(await ensureMap())) return;
-  trackLayer.clearLayers();
-  const walks = [];
+  walks = [];
   let last = 0;
   for (const r of parseCsv(text)) {
     const t = Date.parse(r.utc), ll = [parseFloat(r.lat), parseFloat(r.lon)];
@@ -424,11 +427,18 @@ async function showTrack(text) {
     walks[walks.length - 1].push(ll);
     last = t;
   }
-  for (const w of walks) L.polyline(w, { color: '#58a6ff', weight: 3, opacity: 0.7, interactive: false }).addTo(trackLayer);
-  const pts = walks.flat();
-  trackInfo = pts.length ? `, track of ${walks.length} walk${walks.length > 1 ? 's' : ''}` : '';
-  if (!mapText && pts.length) map.fitBounds(pts, { padding: [24, 24], maxZoom: 19 });
-  if (!mapText) $('#mapstatus').textContent = pts.length ? `Track of ${walks.length} walks.` : 'The track is empty.';
+  drawTrack(true);
+}
+function drawTrack(refit) {
+  trackLayer.clearLayers();
+  const shown = showWalks === 'all' ? walks : walks.slice(-1);
+  for (const w of shown) L.polyline(w, { color: '#58a6ff', weight: 3, opacity: 0.7, interactive: false }).addTo(trackLayer);
+  const pts = shown.flat();
+  const n = walks.length, of = `${n} walk${n > 1 ? 's' : ''}`;
+  trackInfo = !n ? '' : showWalks === 'all' || n === 1 ? `, track of ${of}` : `, last of ${of}`;
+  if (!mapText && refit && pts.length) map.fitBounds(pts, { padding: [24, 24], maxZoom: 19 });
+  if (!mapText) $('#mapstatus').textContent = !n ? 'The track is empty.'
+    : showWalks === 'all' || n === 1 ? `Track of ${of}.` : `Last walk of ${of}.`;
   else showMap(mapText, false);
 }
 
@@ -849,6 +859,17 @@ document.querySelectorAll('[data-colour]').forEach((b) => b.addEventListener('cl
   else drawLegend();
 }));
 drawLegend();
+// Last walk or all walks of the track, remembered on this phone.
+function setWalks(v) {
+  showWalks = v;
+  document.querySelectorAll('[data-walks]').forEach((b) => b.setAttribute('aria-pressed', b.dataset.walks === v));
+  try { localStorage.setItem('walks', v); } catch (e) {}
+  if (walks.length) drawTrack(false);
+}
+document.querySelectorAll('[data-walks]').forEach((b) => b.addEventListener('click', () => setWalks(b.dataset.walks)));
+let savedWalks = null;
+try { savedWalks = localStorage.getItem('walks'); } catch (e) {}
+setWalks(savedWalks === 'all' ? 'all' : 'last');
 // Tap a legend entry to hide or show those meters.
 $('#legend').addEventListener('click', (e) => {
   const b = e.target.closest('[data-kind]');

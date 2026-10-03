@@ -10,7 +10,7 @@
 
 #define MAX_SAMPLES 5                // strongest GPS-tagged receptions kept per meter
 #define LOG_INTERVAL_S (6 * 3600UL)  // a meter heard again within this counts as the same walk
-#define TRACK_STEP_M 15              // walk track: a point each time you've moved this far
+#define TRACK_STEP_M 5               // walk track: a point each time you've moved this far
 
 namespace survey {
 
