@@ -264,7 +264,20 @@ uint32_t gpsEpoch() {
   return lastT ? lastT + (millis() - lastAt) / 1000 : 0;
 }
 
-void applyGps() { digitalWrite(PIN_GPS_STANDBY, settings.gps ? HIGH : LOW); }  // LOW = standby on L76K
+// The L76K uses GPS + BeiDou by default; GLONASS as well gives more satellites, so a good fix
+// (HDOP) sooner between houses. Not kept by the module, so sent a moment after each wake-up.
+uint32_t gpsConfigAt = 0;  // millis() to send it at, 0 = sent
+
+void applyGps() {
+  digitalWrite(PIN_GPS_STANDBY, settings.gps ? HIGH : LOW);  // LOW = standby on L76K
+  gpsConfigAt = settings.gps ? millis() + 1000 | 1 : 0;
+}
+
+void configureGps() {
+  if (!gpsConfigAt || (int32_t)(millis() - gpsConfigAt) < 0) return;
+  Serial1.print("$PCAS04,7*1E\r\n");  // GPS + BeiDou + GLONASS
+  gpsConfigAt = 0;
+}
 
 // ---------- labels ----------
 Label *findLabel(uint32_t id) {
@@ -1928,6 +1941,7 @@ void setup() {
 
 void loop() {
   while (Serial1.available()) gps.encode(Serial1.read());
+  configureGps();
 
   if (rxFlag) {
     rxFlag = false;
