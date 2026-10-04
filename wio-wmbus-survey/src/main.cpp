@@ -270,7 +270,7 @@ uint32_t gpsConfigAt = 0;  // millis() to send it at, 0 = sent
 
 void applyGps() {
   digitalWrite(PIN_GPS_STANDBY, settings.gps ? HIGH : LOW);  // LOW = standby on L76K
-  gpsConfigAt = settings.gps ? millis() + 1000 | 1 : 0;
+  gpsConfigAt = settings.gps ? (millis() + 1000) | 1 : 0;
 }
 
 void configureGps() {
@@ -345,11 +345,16 @@ void stepLabel(uint32_t id, int dir) {
 }
 
 // ---------- position estimate ----------
-// true if the sample was kept. The L76K sends a fix every second, so a fresh one is at most ~1 s
-// old; older means the last update was lost, and walking on it would put the sample metres off.
-bool addSample(Meter &m, int16_t rssi) {
+// The L76K sends a fix every second, so a fresh one is at most ~1 s old; older means the last
+// update was lost, and walking on it would put a position metres off.
+bool goodFix() {
   if (!gps.location.isValid() || gps.location.age() > GPS_MAX_AGE_MS) return false;
-  if (gps.hdop.isValid() && gps.hdop.hdop() > GPS_MAX_HDOP) return false;  // poor satellite geometry
+  return !gps.hdop.isValid() || gps.hdop.hdop() <= GPS_MAX_HDOP;  // poor satellite geometry
+}
+
+// true if the sample was kept.
+bool addSample(Meter &m, int16_t rssi) {
+  if (!goodFix()) return false;
   return survey::addSample(m, (int32_t)lround(gps.location.lat() * 1e7), (int32_t)lround(gps.location.lng() * 1e7),
                            rssi);
 }
@@ -870,8 +875,7 @@ void logHistory() {
 void logTrack() {
   static int32_t lastLat, lastLon;
   static bool have = false;
-  if (!qspiOk || !settings.gps || !gps.location.isValid() || gps.location.age() > GPS_MAX_AGE_MS) return;
-  if (gps.hdop.isValid() && gps.hdop.hdop() > GPS_MAX_HDOP) return;
+  if (!qspiOk || !settings.gps || !goodFix()) return;
   uint32_t now = gpsEpoch();
   if (!now) return;
   int32_t lat = (int32_t)lround(gps.location.lat() * 1e7), lon = (int32_t)lround(gps.location.lng() * 1e7);
@@ -1031,7 +1035,7 @@ struct ByteRing {
 };
 
 ByteRing<16> keyRing;       // BLE task -> loop
-ByteRing<256> cmdRing;      // BLE task -> loop
+ByteRing<512> cmdRing;      // BLE task -> loop
 ByteRing<4096> txRing;      // loop -> console notifications
 bool bleBegun = false;
 char bleName[12];
@@ -1321,7 +1325,7 @@ void bleLoop() {
   }
   bleWasLinked = true;
 
-  static char line[48];
+  static char line[208];  // room for "G " + 100 bytes of hex
   static size_t len = 0;
   int ch;
   while ((ch = cmdRing.get()) >= 0) {
@@ -1740,7 +1744,7 @@ void handleButtons() {
 }
 
 // ---------- serial commands ----------
-char cmd[48];
+char cmd[208];
 size_t cmdLen = 0;
 
 void runCommand(char *c, bool fromBle = false) {
@@ -1864,6 +1868,29 @@ void runCommand(char *c, bool fromBle = false) {
       lastLabelEdit = millis();
     }
     con.printf("# key for %08lx: %s\n", (unsigned long)id, hexKey ? (l ? "set" : "NOT set") : "cleared");
+  } else if (c[0] == 'G' && (c[1] == ' ' || c[1] == 0)) {
+    // G [hex]: bytes for the GPS (the page sends orbit data and the phone's position on connect).
+    // Bare G asks whether that's worth it. One line at a time: the page waits for each reply.
+    if (!settings.gps) {
+      con.println("# G off");
+      return;
+    }
+    if (!c[1]) {
+      con.println(goodFix() ? "# G fix" : "# G ready");
+      return;
+    }
+    uint8_t bytes[100];
+    size_t n = 0;
+    bool ok = true;
+    for (const char *p = c + 2; *p && ok; p += 2) {
+      ok = n < sizeof(bytes) && isxdigit((unsigned char)p[0]) && isxdigit((unsigned char)p[1]);
+      if (ok) {
+        char byte[3] = {p[0], p[1], 0};
+        bytes[n++] = strtoul(byte, nullptr, 16);
+      }
+    }
+    if (ok) Serial1.write(bytes, n);
+    con.println(ok ? "# G ok" : "# G bad");
   } else if (*c) {
     con.println("# commands: s=status  d=dump  c=clear survey  l <id> [label]  L=list labels  k <id> [hexkey]  h=history"
                    "  r=raw telegrams  t=track  HCLEAR=delete history+raw+track  FORMAT=erase all");

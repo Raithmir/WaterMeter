@@ -118,6 +118,7 @@
   <span id="status">not connected</span>
   <button id="connect" class="primary">Connect</button>
 </header>
+<p id="gpsassist" class="note" hidden></p>
 
 <p id="unsupported" class="note warn" hidden>
   This browser has no Web Bluetooth. Use Chrome on Android (or Chrome/Edge on a computer).
@@ -288,6 +289,7 @@ function onConsole(e) {
 }
 
 function onLine(line) {
+  if (assistWait && (line.startsWith('# G ') || line.startsWith('# commands:'))) return assistWait(line);
   if (download && download.name === null) {
     if (line.startsWith('# file ')) {
       clearTimeout(download.timer);
@@ -744,6 +746,107 @@ document.addEventListener('keydown', (e) => {
   sendKey(k.charCodeAt(0) | (e.repeat ? 0x80 : 0));
 });
 
+// ---- GPS assist: orbit data, the time and the phone's position for the tracker's GPS ----
+// Espruino rebuilds casic.base64 every hour for the Bangle.js 2, whose GPS speaks the same CASIC
+// protocol as the L76K: a short text header, then the GPS satellites' orbits as binary messages.
+// With those, the time and a rough position the GPS can find the satellites in seconds instead
+// of working it all out from scratch (~30 s, more between houses).
+const AGPS_URL = 'https://www.espruino.com/agps/casic.base64';
+const AGPS_MAX_AGE_MS = 4 * 3600e3;  // orbits are good for about 4 hours
+const GPS_LEAP_S = 18;               // GPS time runs this far ahead of UTC
+let assistWait = null;  // takes the tracker's next "# G ..." reply
+
+function gpsCmd(text) {
+  const reply = new Promise((resolve) => {
+    const t = setTimeout(() => { assistWait = null; resolve(null); }, 3000);
+    assistWait = (line) => { clearTimeout(t); assistWait = null; resolve(line); };
+  });
+  sendCmd(text);
+  return reply;
+}
+
+// BA CE, payload length, class, id, payload, then the sum of the little-endian 32-bit words from
+// the length on (the protocol manual's formula has the bytes the other way round; real data doesn't).
+function casic(cls, id, payload) {
+  const msg = new Uint8Array(10 + payload.length), dv = new DataView(msg.buffer);
+  msg.set([0xba, 0xce]);
+  dv.setUint16(2, payload.length, true);
+  msg[4] = cls;
+  msg[5] = id;
+  msg.set(payload, 6);
+  let sum = 0;
+  for (let i = 2; i < 6 + payload.length; i += 4) sum = (sum + dv.getUint32(i, true)) >>> 0;
+  dv.setUint32(6 + payload.length, sum, true);
+  return msg;
+}
+
+// AID-INI: GPS week and time of week, plus the position as lat/lon/alt when there is one.
+function aidIni(pos) {
+  const p = new Uint8Array(56), dv = new DataView(p.buffer);
+  const ms = Date.now() + GPS_LEAP_S * 1000 - Date.UTC(1980, 0, 6);
+  const wn = Math.floor(ms / 604800e3);
+  let flags = 0x02;  // time valid
+  if (pos) {
+    dv.setFloat64(0, pos.latitude, true);
+    dv.setFloat64(8, pos.longitude, true);
+    dv.setFloat64(16, pos.altitude || 0, true);
+    flags |= 0x01 | 0x20 | (pos.altitude == null ? 0x40 : 0);  // position valid, as lat/lon, (no height)
+  }
+  dv.setFloat64(24, (ms - wn * 604800e3) / 1000, true);
+  dv.setUint16(52, wn, true);
+  dv.setUint8(55, flags);
+  return casic(0x0b, 0x01, p);
+}
+
+async function fetchOrbits() {
+  try {
+    const r = await fetch(AGPS_URL, { cache: 'no-store' });
+    if (!r.ok) return null;
+    const made = new Date(r.headers.get('Last-Modified'));
+    if (!(Date.now() - made < AGPS_MAX_AGE_MS)) return null;  // stale, or no date
+    const bin = Uint8Array.from(atob((await r.text()).trim()), (ch) => ch.charCodeAt(0));
+    const start = bin.findIndex((b, i) => b === 0xba && bin[i + 1] === 0xce);  // after the text header
+    return start < 0 ? null : { data: bin.subarray(start), made };
+  } catch {
+    return null;
+  }
+}
+
+function phonePosition() {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) return resolve(null);
+    navigator.geolocation.getCurrentPosition((p) => resolve(p.coords.accuracy < 5000 ? p.coords : null),
+      () => resolve(null), { maximumAge: 10 * 60e3, timeout: 10e3 });
+  });
+}
+
+// On connect, unless the tracker's GPS is off or already has a good fix.
+async function assistGps() {
+  const say = (t) => { $('#gpsassist').textContent = t; $('#gpsassist').hidden = !t; };
+  say('');
+  const state = await gpsCmd('G');
+  if (state === '# G fix') say('GPS: the tracker has a fix already.');
+  if (state !== '# G ready') return;  // GPS off, or a build without the command
+  setFileButtons(false);
+  say('GPS assist: getting orbit data and your position…');
+  const [orbits, pos] = await Promise.all([fetchOrbits(), phonePosition()]);
+  const ini = aidIni(pos);
+  const all = new Uint8Array(ini.length + (orbits ? orbits.data.length : 0));
+  all.set(ini);
+  if (orbits) all.set(orbits.data, ini.length);
+  let reply = '# G ok';
+  for (let i = 0; i < all.length && reply === '# G ok' && rxChr; i += 100) {
+    const hexStr = Array.from(all.subarray(i, i + 100), (b) => b.toString(16).padStart(2, '0')).join('');
+    reply = await gpsCmd('G ' + hexStr);
+  }
+  if (!rxChr) return;
+  setFileButtons(true);
+  if (reply !== '# G ok') return say(`GPS assist failed (${reply || 'no reply'}).`);
+  const at = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  say('GPS assisted: ' + (orbits ? `orbits from ${at(orbits.made)}` : 'no orbit data (offline?)') +
+    (pos ? `, your position ±${Math.round(pos.accuracy)} m.` : ', no position (location off?).'));
+}
+
 // ---- connection ----
 function setStatus(text, on) {
   $('#status').textContent = text;
@@ -775,6 +878,7 @@ async function connect() {
     setStatus(device.name || 'connected', true);
     $('#connect').textContent = 'Disconnect';
     setFileButtons(true);
+    assistGps();
   } catch (err) {
     setStatus('not connected');
     log('! ' + err.message);
@@ -784,6 +888,7 @@ async function connect() {
 
 function onDisconnected() {
   keysChr = rxChr = null;
+  if (assistWait) assistWait(null);
   download = null;
   partial = '';
   setStatus('disconnected');

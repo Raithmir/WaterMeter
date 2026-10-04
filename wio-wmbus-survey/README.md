@@ -48,6 +48,7 @@ The phone page is at **https://raithmir.github.io/WaterMeter/wio-wmbus-survey/we
 
 <img width="1080" height="1964" alt="Screenshot_20260926-074930~2" src="https://github.com/user-attachments/assets/024a4c6b-246e-44da-b1d3-19bd870c7f35" />
 
+- GPS assist, on connect: unless the tracker already has a fix, the page fetches the GPS satellites' orbits (Espruino's hourly `casic.base64`, made for the Bangle.js 2, whose GPS speaks the same protocol), takes one reading of the phone's location, and sends both with the time to the tracker's GPS, so it gets a fix in seconds rather than ~30 s. Once it says "GPS assisted" the phone can go in your pocket; the orbits are good for about 4 hours. Allow location for the page; without it (or offline) it still sends what it has
 - Device view: the tracker's screen live on a photo of the tracker; tap around the joystick to push it, its middle to press, and the user button. Plain view: a big screen with arrow buttons
 - Log: what the tracker prints on serial, with a box for serial commands
 - Files: downloads `survey.csv`, `history.csv` and `raw.csv` without a cable. The tracker keeps listening while it does
@@ -140,6 +141,7 @@ The same commands work from the command box on the phone page.
 - `d` dump table as CSV (label, printed serial, mode T1/C1a/C1b, manufacturer, type, reading, alarms, UTC, lat, lon, spread)
 - `c` clear survey (labels and history kept)
 - `h` print history.csv, `r` print raw.csv, `t` print track.csv (not while a computer has the drive: open the files there)
+- `G <hex>` pass bytes to the GPS (how the page sends its assist data); `G` alone answers `# G ready`, `# G fix` (has a good fix) or `# G off`
 - `HCLEAR` delete history.csv, raw.csv and track.csv
 - `l <id> <label>` set label, e.g. `l 1a2b3c4d 12A`; `l <id>` removes it (a stored key is kept)
 - `L` list labels (`,key` = meter has an AES key)
