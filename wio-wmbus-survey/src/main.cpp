@@ -49,7 +49,8 @@ using Adafruit_LittleFS_Namespace::FILE_O_WRITE;
 #define HISTORY_FILE "/history.csv"  // one row per meter per walk
 #define RAW_FILE "/raw.csv"          // raw telegrams of meters whose reading isn't decoded
 #define TRACK_FILE "/track.csv"      // where you walked: a point every TRACK_STEP_M metres
-#define TRACK_FLUSH_MS (15 * 60000UL)  // track points wait in RAM at most this long
+#define TRACK_FLUSH_MS (5 * 60000UL)   // track points wait in RAM at most this long
+#define TRACK_IDLE_MS 60000UL         // ... or until you've stood still this long (e.g. home)
 
 // ---------- hardware ----------
 SX1262 radio = new Module(SX126X_CS, SX126X_DIO1, SX126X_RESET, SX126X_BUSY);
@@ -419,9 +420,11 @@ struct LogFile {
 LogFile historyLog = {HISTORY_FILE, HISTORY_HEADER};
 LogFile rawLog = {RAW_FILE, RAW_HEADER};
 // Not kept in the snapshots (it's only where you walked), so a power cut can lose the last
-// TRACK_FLUSH_MS of it; appending it that often costs the flash a few FAT updates per hour walked.
+// TRACK_FLUSH_MS of it while walking. Appended once you stop for TRACK_IDLE_MS, so switching off
+// at home keeps the walk back; that costs the flash a FAT update per stop.
 LogFile trackLog = {TRACK_FILE, TRACK_HEADER};
 uint32_t trackPendingSince = 0;  // millis() of the oldest point not yet in track.csv
+uint32_t trackLastPoint = 0;     // millis() of the newest point
 
 bool flushLog(LogFile &lf) {
   if (!lf.len) return true;
@@ -864,7 +867,8 @@ void logTrack() {
   size_t n = trackRow(line, sizeof(line) - 1, now, lat, lon);
   strcpy(line + n, "\n");
   if (!logLine(trackLog, line)) return;
-  if (trackLog.len == n + 1) trackPendingSince = millis();  // buffer was empty
+  trackLastPoint = millis();
+  if (trackLog.len == n + 1) trackPendingSince = trackLastPoint;  // buffer was empty
   lastLat = lat;
   lastLon = lon;
   have = true;
@@ -1943,7 +1947,9 @@ void loop() {
     lastLogCheck = now;
     logHistory();
     logTrack();
-    if (trackLog.len && now - trackPendingSince > TRACK_FLUSH_MS && flushLog(trackLog)) flash.syncBlocks();
+    if (trackLog.len && (now - trackPendingSince > TRACK_FLUSH_MS || now - trackLastPoint > TRACK_IDLE_MS) &&
+        flushLog(trackLog))
+      flash.syncBlocks();
   }
   handleUsbDrive();
   if (surveyDirty && (ringOk || !driveToHost) && now - lastSurveySave > (ringOk ? SURVEY_SAVE_MS : FALLBACK_SAVE_MS))
