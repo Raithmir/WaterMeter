@@ -191,6 +191,64 @@ class Console : public Print {
 
 void onRx() { rxFlag = true; }
 
+// ---------- watchdog ----------
+// If the loop stops for WDT_S (stuck, or crashed) the chip's watchdog restarts the tracker,
+// rather than it staying frozen until switched off. Once started it can't be stopped, even by
+// a restart into the bootloader, which doesn't feed it: so it's long enough for a firmware
+// update to finish. Where the code was is kept over the restart and shown by 's'.
+#define WDT_S 120
+#define CRASH_MAGIC 0x43524153  // "CRAS"
+struct Crash {
+  uint32_t magic, kind, pc, lr;  // kind 'w' = watchdog, 'f' = fault
+};
+Crash crashRec __attribute__((section(".noinit")));  // not zeroed at start-up (see the .ld)
+Crash lastCrash;                                     // from before this start, if any
+
+extern "C" void saveCrash(const uint32_t *frame, uint32_t kind) {
+  crashRec = {CRASH_MAGIC, kind, frame[6], frame[5]};  // stacked pc, lr
+  if (kind == 'f') NVIC_SystemReset();
+  while (true) {}  // the watchdog restarts the chip a moment later
+}
+
+// Both pass saveCrash the interrupted code's stack: the loop runs on a FreeRTOS task (PSP).
+extern "C" __attribute__((naked)) void WDT_IRQHandler() {
+  __asm volatile("tst lr, #4\n ite eq\n mrseq r0, msp\n mrsne r0, psp\n movs r1, #'w'\n b saveCrash\n");
+}
+extern "C" __attribute__((naked)) void HardFault_Handler() {
+  __asm volatile("tst lr, #4\n ite eq\n mrseq r0, msp\n mrsne r0, psp\n movs r1, #'f'\n b saveCrash\n");
+}
+
+// Settings can only be written before it starts; after a software restart it's still running.
+void startWatchdog() {
+  if (!NRF_WDT->RUNSTATUS) {
+    NRF_WDT->CONFIG = WDT_CONFIG_SLEEP_Msk;  // keep counting while the CPU sleeps
+    NRF_WDT->CRV = WDT_S * 32768;
+    NRF_WDT->RREN = WDT_RREN_RR0_Msk;
+    NRF_WDT->INTENSET = WDT_INTENSET_TIMEOUT_Msk;  // ~60 us before the restart: saveCrash
+    NRF_WDT->TASKS_START = 1;
+  }
+  NVIC_SetPriority(WDT_IRQn, 2);
+  NVIC_EnableIRQ(WDT_IRQn);
+}
+
+void feedWatchdog() { NRF_WDT->RR[0] = WDT_RR_RR_Reload; }
+
+// Why the tracker last started, e.g. "watchdog, stuck at pc 0003a1f4 lr 0003a1c9".
+void restartText(char *buf, size_t size) {
+  uint32_t r = readResetReason();
+  const char *why = lastCrash.kind == 'f'            ? "crash"
+                    : r & POWER_RESETREAS_DOG_Msk      ? "watchdog, stuck"
+                    : r & POWER_RESETREAS_LOCKUP_Msk   ? "lockup"
+                    : r & POWER_RESETREAS_SREQ_Msk     ? "software (update, FORMAT)"
+                    : r & POWER_RESETREAS_RESETPIN_Msk ? "reset pin"
+                    : r                                ? "wake-up"
+                                                       : "power on";
+  if (lastCrash.magic == CRASH_MAGIC)
+    snprintf(buf, size, "%s at pc %08lx lr %08lx", why, (unsigned long)lastCrash.pc, (unsigned long)lastCrash.lr);
+  else
+    snprintf(buf, size, "%s", why);
+}
+
 // ---------- helpers ----------
 float batteryVolts() { return analogRead(PIN_VBAT) * AREF_VOLTAGE / 4095.0f * ADC_MULTIPLIER; }
 
@@ -1847,6 +1905,9 @@ void runCommand(char *c, bool fromBle = false) {
   } else if (!strcmp(c, "s")) {
     con.println("# status");
     con.printf("build %s %s\n", __DATE__, __TIME__);
+    char why[80];
+    restartText(why, sizeof(why));
+    con.printf("started: %s, up %lu s\n", why, (unsigned long)(millis() / 1000));
     con.printf("qspi %s, jedec %06lx, %lu KB\n", qspiOk ? "ok" : "FAILED", (unsigned long)chipJedecId(),
                   (unsigned long)(flash.size() / 1024));
     con.printf("ring %s: %lu blocks, snapshot %lu, next block %lu\n", ringOk ? "ok" : "off", (unsigned long)ring.blocks,
@@ -1999,6 +2060,9 @@ void handleSerial() {
 
 // ---------- main ----------
 void setup() {
+  feedWatchdog();  // still running after a software restart (does nothing if not)
+  if (crashRec.magic == CRASH_MAGIC) lastCrash = crashRec;
+  crashRec.magic = 0;
   flashMutex = xSemaphoreCreateMutex();
   // The P25Q16H isn't in the library's auto-detect list, so name it (from variant.h).
   static const SPIFlash_Device_t qspiDevices[] = {EXTERNAL_FLASH_DEVICES};
@@ -2050,10 +2114,15 @@ void setup() {
   beep(2000, 60);
   lastInput = millis();
   con.println("# wM-Bus T1 survey ready. Send 'help' for commands");
+  char why[80];
+  restartText(why, sizeof(why));
+  con.printf("# started: %s\n", why);
   printCsvHeader(Serial);
+  startWatchdog();
 }
 
 void loop() {
+  feedWatchdog();
   while (Serial1.available()) {
     uint8_t c = Serial1.read();
     gps.encode(c);

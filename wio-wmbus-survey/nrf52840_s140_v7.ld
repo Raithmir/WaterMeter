@@ -27,4 +27,15 @@ SECTIONS
   } > RAM
 } INSERT AFTER .data;
 
+/* Not zeroed at start-up, so a crash record survives the restart (see the watchdog in main.cpp). */
+SECTIONS
+{
+  .noinit (NOLOAD) :
+  {
+    . = ALIGN(4);
+    KEEP(*(.noinit*))
+    . = ALIGN(4);
+  } > RAM
+} INSERT AFTER .bss;
+
 INCLUDE "nrf52_common.ld"
