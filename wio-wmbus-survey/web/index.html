@@ -90,6 +90,7 @@
   .file { display: flex; align-items: center; gap: 10px; }
   .file button { min-width: 120px; }
   .file span { font-size: 13px; color: var(--muted); }
+  .file .del { margin-left: auto; padding: 6px 10px; font-size: 13px; color: var(--danger); }
   #map { height: 380px; margin-top: 10px; border-radius: 8px; background: var(--bg); }
   .leaflet-popup-content { font-size: 13px; line-height: 1.4; }
   .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-top: 8px; }
@@ -178,12 +179,13 @@
 <section id="filestab" class="tab" hidden>
   <div class="files">
     <div class="file"><button data-dl="d">survey.csv</button><span>one row per meter</span></div>
-    <div class="file"><button data-dl="h">history.csv</button><span>one row per meter per walk</span></div>
-    <div class="file"><button data-dl="r">raw.csv</button><span>telegrams that weren't decoded</span></div>
-    <div class="file"><button data-dl="t">track.csv</button><span>where you walked, a point every 5 m</span></div>
+    <div class="file"><button data-dl="h">history.csv</button><span>one row per meter per walk</span><button class="del" data-del="h" aria-label="Delete history.csv">Delete</button></div>
+    <div class="file"><button data-dl="r">raw.csv</button><span>telegrams that weren't decoded</span><button class="del" data-del="r" aria-label="Delete raw.csv">Delete</button></div>
+    <div class="file"><button data-dl="t">track.csv</button><span>where you walked, a point every 5 m</span><button class="del" data-del="t" aria-label="Delete track.csv">Delete</button></div>
   </div>
   <p class="note" id="dlstatus"></p>
-  <p class="note">The tracker keeps listening while a file downloads.</p>
+  <p class="note">The tracker keeps listening while a file downloads. Delete removes the file from the tracker
+    for good (download it first if you want to keep it); the survey and labels stay.</p>
 </section>
 <section id="maptab" class="tab" hidden>
   <div class="row">
@@ -269,6 +271,7 @@ const logEl = $('#log');
 let lines = [], partial = '';
 const decoder = new TextDecoder();
 let download = null;  // {name, cmd, parts, bytes} while a file is coming in
+let deleting = null;  // file name while waiting for the tracker to confirm a delete
 
 function log(text) {
   lines.push(text);
@@ -307,6 +310,12 @@ function onLine(line) {
     $(download.into ? download.into.status : '#dlstatus').textContent = `${download.name}: ${(download.bytes / 1024).toFixed(1)} KB`;
     return;
   }
+  if (deleting && (/^# \S+\.csv deleted$/.test(line) || line.startsWith('# unplug') || line.startsWith('# commands:'))) {
+    $('#dlstatus').textContent = line.startsWith('# unplug') ? 'Unplug the tracker from the computer first.'
+      : line.startsWith('# commands:') ? "The tracker can't delete one file: update its firmware?"
+      : line.slice(2) + '.';
+    deleting = null;
+  }
   log(line);
 }
 
@@ -329,7 +338,7 @@ function finishDownload() {
 }
 
 function setFileButtons(on) {
-  document.querySelectorAll('[data-dl], #maptracker, #usetracker').forEach((b) => (b.disabled = !on || !device));
+  document.querySelectorAll('[data-dl], [data-del], #maptracker, #usetracker').forEach((b) => (b.disabled = !on || !device));
 }
 
 // ---- map: survey.csv rows at their estimated positions (Leaflet, loaded when first needed) ----
@@ -1002,6 +1011,14 @@ $('#mapfile').addEventListener('change', async (e) => {
 });
 document.querySelectorAll('[data-dl]').forEach((b) => b.addEventListener('click', () => {
   startDownload(b.dataset.dl, null, '#dlstatus', 'starting…');
+}));
+document.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => {
+  const name = b.closest('.file').querySelector('[data-dl]').textContent;
+  if (download || !confirm(`Delete ${name} from the tracker? This can't be undone.`)) return;
+  deleting = name;
+  $('#dlstatus').textContent = `deleting ${name}…`;
+  log('> HCLEAR ' + b.dataset.del);
+  sendCmd('HCLEAR ' + b.dataset.del);
 }));
 
 if (!navigator.bluetooth) {

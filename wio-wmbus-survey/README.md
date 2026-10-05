@@ -51,7 +51,7 @@ The phone page is at **https://raithmir.github.io/WaterMeter/wio-wmbus-survey/we
 - GPS assist, on connect: unless the tracker already has a fix, the page fetches the GPS satellites' orbits (Espruino's hourly `casic.base64`, made for the Bangle.js 2, whose GPS speaks the same protocol), takes one reading of the phone's location, and sends both with the time to the tracker's GPS, so it gets a fix in seconds rather than ~30 s. Once it says "GPS assisted" the phone can go in your pocket; the orbits are good for about 4 hours. Allow location for the page; without it (or offline) it still sends what it has
 - Device view: the tracker's screen live on a photo of the tracker; tap around the joystick to push it, its middle to press, and the user button. Plain view: a big screen with arrow buttons
 - Log: what the tracker prints on serial, with a box for serial commands
-- Files: downloads `survey.csv`, `history.csv` and `raw.csv` without a cable. The tracker keeps listening while it does
+- Files: downloads `survey.csv`, `history.csv`, `raw.csv` and `track.csv` without a cable, and deletes the three logs one at a time (Delete asks first; download before deleting to keep a copy). The tracker keeps listening while it does
 - Map: every meter at its estimated position on OpenStreetMap, coloured by leak/alarm/labelled (Status) or litres per day since the last walk (Use), with a circle for its spread; tap one for its house, serial, reading, use, alarms and signal, and a link to its Usage chart. "From tracker" loads the survey and the walk track over Bluetooth; "Open files" takes `survey.csv` and/or `track.csv` from the USB drive and needs no Bluetooth (so any browser works, iPhone too). The track shows as blue lines, one per walk; Last walk / All walks picks which. The map itself needs internet
 - Usage: one meter's litres per day between walks, as a bar chart (tap a bar for its dates and litres) and a table of readings, with the average over all of them. Loads `history.csv` from the tracker or from a file, like the map. Rows within 6 hours count as one walk
 
@@ -101,7 +101,7 @@ Each meter keeps its 5 strongest GPS-tagged receptions. Only receptions with a f
 - `track.csv`: where you walked, `utc,lat,lon`, a point every 5 m (`TRACK_STEP_M`) while the GPS has a good fix. Points wait in RAM and are appended once you have stood still for a minute (so switch off after getting home, not on the doorstep), at most 5 minutes later while walking, or when a computer is plugged in. A power cut mid-walk can lose the last few minutes of it.
 - `raw.csv`: for meters whose reading isn't decoded, one raw telegram per walk (hex, CRCs removed, the form wmbusmeters accepts), with the radio mode. Before a GPS fix the time is left blank.
 
-History and raw rows are collected in RAM (and saved in the survey snapshots) and appended to the files when a computer is plugged in. Around 50 houses walked weekly is ~150 KB of history a year, and a 1 km walk adds ~8 KB of track (~400 KB a year weekly); the ~1 MB left beside `state.bin` holds nearly two years of both. `HCLEAR` starts afresh.
+History and raw rows are collected in RAM (and saved in the survey snapshots) and appended to the files when a computer is plugged in. Around 50 houses walked weekly is ~150 KB of history a year, and a 1 km walk adds ~8 KB of track (~400 KB a year weekly); the ~1 MB left beside `state.bin` holds nearly two years of both. `HCLEAR` starts afresh, or `HCLEAR t` (Delete beside track.csv on the phone page) clears just the track.
 
 ## Printed serial numbers (IZAR)
 Sappel-made IZAR meters (manufacturer `SAP`) don't broadcast a separate serial number. Their printed number is packed into the radio address, so the tracker works it out from the header, the same way wmbusmeters' `izar` driver does. It appears in `survey.csv`, `history.csv`, the `d` dump and on the meter's detail screen. Other meters leave it blank.
@@ -142,7 +142,7 @@ The same commands work from the command box on the phone page.
 - `c` clear survey (labels and history kept)
 - `h` print history.csv, `r` print raw.csv, `t` print track.csv (not while a computer has the drive: open the files there)
 - `G <hex>` pass bytes to the GPS (how the page sends its assist data); `G` alone answers `# G ready`, `# G fix` (has a good fix) or `# G off`
-- `HCLEAR` delete history.csv, raw.csv and track.csv
+- `HCLEAR` delete history.csv, raw.csv and track.csv; `HCLEAR h`, `HCLEAR r` or `HCLEAR t` deletes just that one (also the Delete buttons in the phone page's Files tab). Not while a computer has the drive
 - `l <id> <label>` set label, e.g. `l 1a2b3c4d 12A`; `l <id>` removes it (a stored key is kept)
 - `L` list labels (`,key` = meter has an AES key)
 - `k <id> <32 hex digits>` set a meter's AES key (e.g. a Sensus with a non-default key); `k <id>` clears it

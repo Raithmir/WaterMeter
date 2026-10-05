@@ -1812,24 +1812,30 @@ void runCommand(char *c, bool fromBle = false) {
   } else if (!strcmp(c, "t")) {
     printLog(trackLog);
     Serial.println("# end");
-  } else if (!strcmp(c, "HCLEAR")) {
+  } else if (!strcmp(c, "HCLEAR") || !strcmp(c, "HCLEAR h") || !strcmp(c, "HCLEAR r") || !strcmp(c, "HCLEAR t")) {
+    // HCLEAR deletes all three logs, HCLEAR h/r/t just history, raw or track
     if (driveToHost) {
       con.println("# unplug the USB drive first (or eject it and use a charger)");
       return;
     }
-    historyLog.len = rawLog.len = trackLog.len = 0;
-    if (qspiOk) {
-      fatfs.remove(HISTORY_FILE);
-      fatfs.remove(RAW_FILE);
-      fatfs.remove(TRACK_FILE);
-      flash.syncBlocks();
+    char which = c[6] ? c[7] : 0;
+    LogFile *logs[] = {&historyLog, &rawLog, &trackLog};
+    for (LogFile *lf : logs) {
+      if (which && lf->path[1] != which) continue;  // "/history.csv" etc.
+      lf->len = 0;
+      if (qspiOk) fatfs.remove(lf->path);
     }
+    if (qspiOk) flash.syncBlocks();
     for (int i = 0; i < meterCount; i++) {
-      meters[i].loggedUtc = meters[i].rawLoggedUtc = 0;
-      meters[i].rawThisSession = false;
+      if (!which || which == 'h') meters[i].loggedUtc = 0;
+      if (!which || which == 'r') {
+        meters[i].rawLoggedUtc = 0;
+        meters[i].rawThisSession = false;
+      }
     }
     surveyDirty = true;
-    con.println("# history, raw and track logs deleted");
+    if (!which) con.println("# history, raw and track logs deleted");
+    else con.printf("# %s deleted\n", which == 'h' ? "history.csv" : which == 'r' ? "raw.csv" : "track.csv");
   } else if (!strcmp(c, "FORMAT")) {
     driveToHost = false;
     delay(200);  // let any USB read in progress finish before erasing
@@ -1893,7 +1899,7 @@ void runCommand(char *c, bool fromBle = false) {
     con.println(ok ? "# G ok" : "# G bad");
   } else if (*c) {
     con.println("# commands: s=status  d=dump  c=clear survey  l <id> [label]  L=list labels  k <id> [hexkey]  h=history"
-                   "  r=raw telegrams  t=track  HCLEAR=delete history+raw+track  FORMAT=erase all");
+                   "  r=raw telegrams  t=track  HCLEAR [h|r|t]=delete history+raw+track (or one)  FORMAT=erase all");
   }
 }
 
