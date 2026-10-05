@@ -32,6 +32,7 @@ using Adafruit_LittleFS_Namespace::FILE_O_WRITE;
 #define LOW_BATT_V 3.50f         // warn below this (LiPo), cleared again above LOW_BATT_V + 0.1
 #define GPS_MAX_AGE_MS 1500      // position samples need a fix at most this old
 #define GPS_MAX_HDOP 2.5         // ... and at least this good (HDOP ~1 = good, >2.5 = metres worse)
+#define TRACK_MAX_HDOP 5.0       // track points take worse: a few metres off beats starting minutes late
 #define FS_MARKER "/wmsurvey"    // flash is formatted once if this is missing
 #define STATE_FILE "state.bin"      // QSPI, hidden: ring of survey snapshots (see "snapshot ring")
 #define STATE_BYTES (1024 * 1024UL)  // smaller sizes are tried if there's no free 1 MB run
@@ -271,7 +272,8 @@ uint32_t gpsConfigAt = 0;  // millis() to send it at, 0 = sent
 // How the GPS's start went, for the status command: a slow first track point is either no fix
 // at all, or a fix too poor to use (HDOP); and whether the assist or the GLONASS setting took.
 uint32_t gpsWokeAt;                        // millis() the GPS was last woken
-uint32_t gpsFixS, gpsGoodS, gpsAssistS;   // seconds after that: first fix, first good fix, assist (0 = not yet)
+uint32_t gpsFixS, gpsTrackS, gpsGoodS, gpsAssistS;  // seconds after that: first fix, first fix good enough
+                                                    // for the track / for positions, assist (0 = not yet)
 uint32_t gpsAssistBytes;
 TinyGPSCustom glonassInView(gps, "GLGSV", 3);  // only sent once GLONASS is in use
 
@@ -279,7 +281,7 @@ void applyGps() {
   digitalWrite(PIN_GPS_STANDBY, settings.gps ? HIGH : LOW);  // LOW = standby on L76K
   gpsConfigAt = settings.gps ? (millis() + 1000) | 1 : 0;
   gpsWokeAt = millis();
-  gpsFixS = gpsGoodS = gpsAssistS = gpsAssistBytes = 0;
+  gpsFixS = gpsTrackS = gpsGoodS = gpsAssistS = gpsAssistBytes = 0;
 }
 
 // Seconds since the GPS woke, at least 1 so 0 can mean "not yet".
@@ -359,14 +361,15 @@ void stepLabel(uint32_t id, int dir) {
 // ---------- position estimate ----------
 // The L76K sends a fix every second, so a fresh one is at most ~1 s old; older means the last
 // update was lost, and walking on it would put a position metres off.
-bool goodFix() {
+bool goodFix(double maxHdop = GPS_MAX_HDOP) {
   if (!gps.location.isValid() || gps.location.age() > GPS_MAX_AGE_MS) return false;
-  return !gps.hdop.isValid() || gps.hdop.hdop() <= GPS_MAX_HDOP;  // poor satellite geometry
+  return !gps.hdop.isValid() || gps.hdop.hdop() <= maxHdop;  // poor satellite geometry
 }
 
 void noteGpsStart() {
   if (!settings.gps) return;
   if (!gpsFixS && gps.location.isValid() && gps.location.age() <= GPS_MAX_AGE_MS) gpsFixS = gpsAwakeS();
+  if (!gpsTrackS && goodFix(TRACK_MAX_HDOP)) gpsTrackS = gpsAwakeS();
   if (!gpsGoodS && goodFix()) gpsGoodS = gpsAwakeS();
 }
 
@@ -889,11 +892,11 @@ void logHistory() {
   }
 }
 
-// A track point each time you've moved TRACK_STEP_M, with the same fix quality as positions.
+// A track point each time you've moved TRACK_STEP_M, while the fix is fresh and HDOP <= TRACK_MAX_HDOP.
 void logTrack() {
   static int32_t lastLat, lastLon;
   static bool have = false;
-  if (!qspiOk || !settings.gps || !goodFix()) return;
+  if (!qspiOk || !settings.gps || !goodFix(TRACK_MAX_HDOP)) return;
   uint32_t now = gpsEpoch();
   if (!now) return;
   int32_t lat = (int32_t)lround(gps.location.lat() * 1e7), lon = (int32_t)lround(gps.location.lng() * 1e7);
@@ -1819,13 +1822,14 @@ void runCommand(char *c, bool fromBle = false) {
     con.printf("gps fix age %lu ms, hdop %.1f\n", (unsigned long)gps.location.age(), gps.hdop.hdop());
     if (settings.gps) {
       // "-" = not yet
-      char fix[12] = "-", good[12] = "-", assist[32] = "none";
+      char fix[12] = "-", track[12] = "-", good[12] = "-", assist[32] = "none";
       if (gpsFixS) snprintf(fix, sizeof(fix), "%lu s", (unsigned long)gpsFixS);
+      if (gpsTrackS) snprintf(track, sizeof(track), "%lu s", (unsigned long)gpsTrackS);
       if (gpsGoodS) snprintf(good, sizeof(good), "%lu s", (unsigned long)gpsGoodS);
       if (gpsAssistS)
         snprintf(assist, sizeof(assist), "at %lu s, %lu bytes", (unsigned long)gpsAssistS, (unsigned long)gpsAssistBytes);
-      con.printf("gps awake %lu s: first fix %s, first good fix %s, assist %s, glonass %s\n",
-                 (unsigned long)gpsAwakeS(), fix, good, assist,
+      con.printf("gps awake %lu s: first fix %s, track fix %s, good fix %s, assist %s, glonass %s\n",
+                 (unsigned long)gpsAwakeS(), fix, track, good, assist,
                  glonassInView.isValid() ? glonassInView.value() : "not seen");
     }
     con.printf("bluetooth %s %s, gps %s, screen off %s, beeps %s, show %s\n", bleName,
