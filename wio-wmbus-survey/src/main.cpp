@@ -268,10 +268,22 @@ uint32_t gpsEpoch() {
 // (HDOP) sooner between houses. Not kept by the module, so sent a moment after each wake-up.
 uint32_t gpsConfigAt = 0;  // millis() to send it at, 0 = sent
 
+// How the GPS's start went, for the status command: a slow first track point is either no fix
+// at all, or a fix too poor to use (HDOP); and whether the assist or the GLONASS setting took.
+uint32_t gpsWokeAt;                        // millis() the GPS was last woken
+uint32_t gpsFixS, gpsGoodS, gpsAssistS;   // seconds after that: first fix, first good fix, assist (0 = not yet)
+uint32_t gpsAssistBytes;
+TinyGPSCustom glonassInView(gps, "GLGSV", 3);  // only sent once GLONASS is in use
+
 void applyGps() {
   digitalWrite(PIN_GPS_STANDBY, settings.gps ? HIGH : LOW);  // LOW = standby on L76K
   gpsConfigAt = settings.gps ? (millis() + 1000) | 1 : 0;
+  gpsWokeAt = millis();
+  gpsFixS = gpsGoodS = gpsAssistS = gpsAssistBytes = 0;
 }
+
+// Seconds since the GPS woke, at least 1 so 0 can mean "not yet".
+uint32_t gpsAwakeS() { return max(1UL, (millis() - gpsWokeAt) / 1000); }
 
 void configureGps() {
   if (!gpsConfigAt || (int32_t)(millis() - gpsConfigAt) < 0) return;
@@ -350,6 +362,12 @@ void stepLabel(uint32_t id, int dir) {
 bool goodFix() {
   if (!gps.location.isValid() || gps.location.age() > GPS_MAX_AGE_MS) return false;
   return !gps.hdop.isValid() || gps.hdop.hdop() <= GPS_MAX_HDOP;  // poor satellite geometry
+}
+
+void noteGpsStart() {
+  if (!settings.gps) return;
+  if (!gpsFixS && gps.location.isValid() && gps.location.age() <= GPS_MAX_AGE_MS) gpsFixS = gpsAwakeS();
+  if (!gpsGoodS && goodFix()) gpsGoodS = gpsAwakeS();
 }
 
 // true if the sample was kept.
@@ -1799,6 +1817,17 @@ void runCommand(char *c, bool fromBle = false) {
                   (unsigned long)gps.failedChecksum(), (unsigned long)gps.satellites.value(),
                   gps.location.isValid() ? "yes" : "no", gpsTimeTrusted ? "trusted" : "not yet");
     con.printf("gps fix age %lu ms, hdop %.1f\n", (unsigned long)gps.location.age(), gps.hdop.hdop());
+    if (settings.gps) {
+      // "-" = not yet
+      char fix[12] = "-", good[12] = "-", assist[32] = "none";
+      if (gpsFixS) snprintf(fix, sizeof(fix), "%lu s", (unsigned long)gpsFixS);
+      if (gpsGoodS) snprintf(good, sizeof(good), "%lu s", (unsigned long)gpsGoodS);
+      if (gpsAssistS)
+        snprintf(assist, sizeof(assist), "at %lu s, %lu bytes", (unsigned long)gpsAssistS, (unsigned long)gpsAssistBytes);
+      con.printf("gps awake %lu s: first fix %s, first good fix %s, assist %s, glonass %s\n",
+                 (unsigned long)gpsAwakeS(), fix, good, assist,
+                 glonassInView.isValid() ? glonassInView.value() : "not seen");
+    }
     con.printf("bluetooth %s %s, gps %s, screen off %s, beeps %s, show %s\n", bleName,
                !settings.ble ? "off" : bleLinked() ? "linked" : "advertising", settings.gps ? "on" : "off",
                SCREEN_OFF_NAMES[settings.screenOff], settings.beeps ? "on" : "off", SHOW_NAMES[settings.show]);
@@ -1895,7 +1924,11 @@ void runCommand(char *c, bool fromBle = false) {
         bytes[n++] = strtoul(byte, nullptr, 16);
       }
     }
-    if (ok) Serial1.write(bytes, n);
+    if (ok) {
+      Serial1.write(bytes, n);
+      if (!gpsAssistS) gpsAssistS = gpsAwakeS();
+      gpsAssistBytes += n;
+    }
     con.println(ok ? "# G ok" : "# G bad");
   } else if (*c) {
     con.println("# commands: s=status  d=dump  c=clear survey  l <id> [label]  L=list labels  k <id> [hexkey]  h=history"
@@ -1992,6 +2025,7 @@ void loop() {
   static uint32_t lastLogCheck = 0;
   if (now - lastLogCheck > 1000) {
     lastLogCheck = now;
+    noteGpsStart();
     logHistory();
     logTrack();
     if (trackLog.len && (now - trackPendingSince > TRACK_FLUSH_MS || now - trackLastPoint > TRACK_IDLE_MS) &&

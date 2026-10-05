@@ -137,7 +137,7 @@ While a computer has the drive the tracker keeps receiving and saving the survey
 ## Serial (115200, line-based)
     pio device monitor
 The same commands work from the command box on the phone page.
-- `s` status: build date, QSPI flash, save ring, USB drive, battery, frame counters, GPS reception (sentences ok/bad, fix age, HDOP), Bluetooth and settings
+- `s` status: build date, QSPI flash, save ring, USB drive, battery, frame counters, GPS reception (sentences ok/bad, fix age, HDOP), how the GPS started since it last woke (seconds to first fix and to first good fix, when the page's assist arrived, GLONASS satellites in view or `not seen` if the GLONASS setting didn't take), Bluetooth and settings
 - `d` dump table as CSV (label, printed serial, mode T1/C1a/C1b, manufacturer, type, reading, alarms, UTC, lat, lon, spread)
 - `c` clear survey (labels and history kept)
 - `h` print history.csv, `r` print raw.csv, `t` print track.csv (not while a computer has the drive: open the files there)
