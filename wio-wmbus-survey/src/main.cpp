@@ -270,18 +270,18 @@ uint32_t gpsEpoch() {
 uint32_t gpsConfigAt = 0;  // millis() to send it at, 0 = sent
 
 // How the GPS's start went, for the status command: a slow first track point is either no fix
-// at all, or a fix too poor to use (HDOP); and whether the assist or the GLONASS setting took.
+// at all, or a fix too poor to use (HDOP); and whether bytes were sent with G, and the GLONASS setting took.
 uint32_t gpsWokeAt;                        // millis() the GPS was last woken
-uint32_t gpsFixS, gpsTrackS, gpsGoodS, gpsAssistS;  // seconds after that: first fix, first fix good enough
-                                                    // for the track / for positions, assist (0 = not yet)
-uint32_t gpsAssistBytes;
+uint32_t gpsFixS, gpsTrackS, gpsGoodS, gpsSentS;  // seconds after that: first fix, first fix good enough
+                                                  // for the track / for positions, first G bytes (0 = not yet)
+uint32_t gpsSentBytes;
 TinyGPSCustom glonassInView(gps, "GLGSV", 3);  // only sent once GLONASS is in use
 
 void applyGps() {
   digitalWrite(PIN_GPS_STANDBY, settings.gps ? HIGH : LOW);  // LOW = standby on L76K
   gpsConfigAt = settings.gps ? (millis() + 1000) | 1 : 0;
   gpsWokeAt = millis();
-  gpsFixS = gpsTrackS = gpsGoodS = gpsAssistS = gpsAssistBytes = 0;
+  gpsFixS = gpsTrackS = gpsGoodS = gpsSentS = gpsSentBytes = 0;
 }
 
 // Seconds since the GPS woke, at least 1 so 0 can mean "not yet".
@@ -291,6 +291,47 @@ void configureGps() {
   if (!gpsConfigAt || (int32_t)(millis() - gpsConfigAt) < 0) return;
   Serial1.print("$PCAS04,7*1E\r\n");  // GPS + BeiDou + GLONASS
   gpsConfigAt = 0;
+}
+
+// The GPS answers binary (CASIC) messages sent with G (e.g. a config poll) in binary;
+// TinyGPSPlus skips those, so they're shown on the console as "# gps cls id: payload hex".
+// GN on the console also echoes its text (NMEA) sentences, until GN again.
+bool gpsEcho = false;
+
+void gpsRead(uint8_t c) {
+  static uint8_t frame[6 + 400];  // BA CE, length, class, id, payload (longer ones are cut)
+  static size_t at = 0, len = 0, want = 0;
+  static char text[100];
+  static size_t textLen = 0;
+  if (gpsEcho && c < 0x80) {
+    if (c == '\n' || textLen == sizeof(text) - 1) {
+      text[textLen] = 0;
+      if (textLen) con.println(text);
+      textLen = 0;
+    } else if (c != '\r') {
+      text[textLen++] = c;
+    }
+  }
+  if (at == 0) {
+    if (c == 0xba) frame[at++] = c;
+    return;
+  }
+  if (at == 1 && c != 0xce) {
+    at = 0;
+    return;
+  }
+  if (at < 6) {
+    frame[at++] = c;
+    if (at == 6) want = 6 + (frame[2] | frame[3] << 8) + 4, len = 6;
+    return;
+  }
+  if (len < sizeof(frame)) frame[len] = c;
+  if (++len < want) return;
+  at = 0;
+  if (want > 6 + 512) return;  // garbage that happened to start BA CE
+  con.printf("# gps %02x %02x:", frame[4], frame[5]);
+  for (size_t i = 6; i < min(len, sizeof(frame)) && i < want - 4; i++) con.printf(" %02x", frame[i]);
+  con.println(want - 4 > sizeof(frame) ? " ..." : "");
 }
 
 // ---------- labels ----------
@@ -1822,14 +1863,14 @@ void runCommand(char *c, bool fromBle = false) {
     con.printf("gps fix age %lu ms, hdop %.1f\n", (unsigned long)gps.location.age(), gps.hdop.hdop());
     if (settings.gps) {
       // "-" = not yet
-      char fix[12] = "-", track[12] = "-", good[12] = "-", assist[32] = "none";
+      char fix[12] = "-", track[12] = "-", good[12] = "-", sent[32] = "none";
       if (gpsFixS) snprintf(fix, sizeof(fix), "%lu s", (unsigned long)gpsFixS);
       if (gpsTrackS) snprintf(track, sizeof(track), "%lu s", (unsigned long)gpsTrackS);
       if (gpsGoodS) snprintf(good, sizeof(good), "%lu s", (unsigned long)gpsGoodS);
-      if (gpsAssistS)
-        snprintf(assist, sizeof(assist), "at %lu s, %lu bytes", (unsigned long)gpsAssistS, (unsigned long)gpsAssistBytes);
-      con.printf("gps awake %lu s: first fix %s, track fix %s, good fix %s, assist %s, glonass %s\n",
-                 (unsigned long)gpsAwakeS(), fix, track, good, assist,
+      if (gpsSentS)
+        snprintf(sent, sizeof(sent), "at %lu s, %lu bytes", (unsigned long)gpsSentS, (unsigned long)gpsSentBytes);
+      con.printf("gps awake %lu s: first fix %s, track fix %s, good fix %s, G sent %s, glonass %s\n",
+                 (unsigned long)gpsAwakeS(), fix, track, good, sent,
                  glonassInView.isValid() ? glonassInView.value() : "not seen");
     }
     con.printf("bluetooth %s %s, gps %s, screen off %s, beeps %s, show %s\n", bleName,
@@ -1907,9 +1948,12 @@ void runCommand(char *c, bool fromBle = false) {
       lastLabelEdit = millis();
     }
     con.printf("# key for %08lx: %s\n", (unsigned long)id, hexKey ? (l ? "set" : "NOT set") : "cleared");
+  } else if (!strcmp(c, "GN")) {
+    gpsEcho = !gpsEcho;
+    con.println(gpsEcho ? "# GN on" : "# GN off");
   } else if (c[0] == 'G' && (c[1] == ' ' || c[1] == 0)) {
-    // G [hex]: bytes for the GPS (the page sends orbit data and the phone's position on connect).
-    // Bare G asks whether that's worth it. One line at a time: the page waits for each reply.
+    // G [hex]: raw bytes for the GPS (CASIC commands, for testing; replies show as "# gps ...").
+    // Bare G says whether it has a good fix. At most 100 bytes a line.
     if (!settings.gps) {
       con.println("# G off");
       return;
@@ -1930,8 +1974,8 @@ void runCommand(char *c, bool fromBle = false) {
     }
     if (ok) {
       Serial1.write(bytes, n);
-      if (!gpsAssistS) gpsAssistS = gpsAwakeS();
-      gpsAssistBytes += n;
+      if (!gpsSentS) gpsSentS = gpsAwakeS();
+      gpsSentBytes += n;
     }
     con.println(ok ? "# G ok" : "# G bad");
   } else if (*c) {
@@ -2010,7 +2054,11 @@ void setup() {
 }
 
 void loop() {
-  while (Serial1.available()) gps.encode(Serial1.read());
+  while (Serial1.available()) {
+    uint8_t c = Serial1.read();
+    gps.encode(c);
+    gpsRead(c);
+  }
   configureGps();
 
   if (rxFlag) {
