@@ -48,7 +48,6 @@ The phone page is at **https://raithmir.github.io/WaterMeter/wio-wmbus-survey/we
 
 <img width="1080" height="1964" alt="Screenshot_20260926-074930~2" src="https://github.com/user-attachments/assets/024a4c6b-246e-44da-b1d3-19bd870c7f35" />
 
-- GPS assist, on connect: unless the tracker already has a fix, the page fetches the GPS satellites' orbits (Espruino's hourly `casic.base64`, made for the Bangle.js 2, whose GPS speaks the same protocol), takes one reading of the phone's location, and sends both with the time to the tracker's GPS, so it gets a fix in seconds rather than ~30 s. Once it says "GPS assisted" the phone can go in your pocket; the orbits are good for about 4 hours. Allow location for the page; without it (or offline) it still sends what it has
 - Device view: the tracker's screen live on a photo of the tracker; tap around the joystick to push it, its middle to press, and the user button. Plain view: a big screen with arrow buttons
 - Log: what the tracker prints on serial, with a box for serial commands
 - Files: downloads `survey.csv`, `history.csv`, `raw.csv` and `track.csv` without a cable, and deletes the three logs one at a time (Delete asks first; download before deleting to keep a copy). The tracker keeps listening while it does
@@ -62,7 +61,7 @@ The phone page is at **https://raithmir.github.io/WaterMeter/wio-wmbus-survey/we
 With a phone watching, the screen is kept up to date for it even while the tracker's own screen is off, and buttons pressed on the page don't turn the tracker's screen on. The link needs the pairing code, so nobody else nearby can connect. The console uses the standard Nordic UART service, so BLE serial terminal apps (e.g. nRF Toolbox, Serial Bluetooth Terminal) work too once paired.
 
 ## List view
-Top line: `41/48 S9 3.92V` = meters heard since power-on / meters in the table (with Show set to not heard: `7 left`; unlabelled: `5 unlab`), GPS satellites in view (`S-` = GPS switched off), battery (`LOW` below 3.5 V), `BT` while a phone is connected.
+Top line: `41/48 S9 3.92V` = meters heard since power-on / meters in the table (with Show set to not heard: `7 left`; unlabelled: `5 unlab`), GPS satellites used in the fix (`S-` = GPS switched off), battery (`LOW` below 3.5 V), `BT` while a phone is connected.
 
 `#12     L   12.345  -71*`
 - Label (or meter ID if unlabelled)
@@ -137,11 +136,12 @@ While a computer has the drive the tracker keeps receiving and saving the survey
 ## Serial (115200, line-based)
     pio device monitor
 The same commands work from the command box on the phone page.
-- `s` status: build date, QSPI flash, save ring, USB drive, battery, frame counters, GPS reception (sentences ok/bad, fix age, HDOP), how the GPS started since it last woke (seconds to first fix, to a fix good enough for the track (HDOP 5) and for meter positions (HDOP 2.5), when the page's assist arrived, GLONASS satellites in view or `not seen` if the GLONASS setting didn't take), Bluetooth and settings
+- `s` status: build date, QSPI flash, save ring, USB drive, battery, frame counters, GPS reception (sentences ok/bad, fix age, HDOP), how the GPS started since it last woke (seconds to first fix, to a fix good enough for the track (HDOP 5) and for meter positions (HDOP 2.5), when bytes were first sent with `G`, GLONASS satellites in view or `not seen` if the GLONASS setting didn't take), Bluetooth and settings
 - `d` dump table as CSV (label, printed serial, mode T1/C1a/C1b, manufacturer, type, reading, alarms, UTC, lat, lon, spread)
 - `c` clear survey (labels and history kept)
 - `h` print history.csv, `r` print raw.csv, `t` print track.csv (not while a computer has the drive: open the files there)
-- `G <hex>` pass bytes to the GPS (how the page sends its assist data); `G` alone answers `# G ready`, `# G fix` (has a good fix) or `# G off`
+- `G <hex>` pass up to 100 bytes to the GPS, e.g. a CASIC command for testing; its binary replies show as `# gps <class> <id>: <payload hex>`. `G` alone answers `# G ready`, `# G fix` (has a good fix) or `# G off`
+- `GN` echo the GPS's NMEA sentences to the console, until `GN` again
 - `HCLEAR` delete history.csv, raw.csv and track.csv; `HCLEAR h`, `HCLEAR r` or `HCLEAR t` deletes just that one (also the Delete buttons in the phone page's Files tab). Not while a computer has the drive
 - `l <id> <label>` set label, e.g. `l 1a2b3c4d 12A`; `l <id>` removes it (a stored key is kept)
 - `L` list labels (`,key` = meter has an AES key)
@@ -164,5 +164,5 @@ GitHub Actions runs both, builds the firmware and compiles the ESPHome configs o
 - No `WMBUS` drive → check it's a data cable; the drive only appears a few seconds after boot. The boot screen shows the build date and `flash ok` / `FLASH FAIL`; `s` on serial gives the details. With a flash failure Windows shows a removable disk with no media
 - Nothing at all → check `radio init failed` on serial
 - Page can't find the tracker → Bluetooth on in settings? Only one phone can be connected at a time. After "Forget phones" (or a `FORMAT`), also remove `WMBUS-xxxx` from the phone's Bluetooth settings before pairing again
-- "no position yet" in detail view → that meter hasn't been heard since the GPS got a fix (the `S` number on the list view is satellites in view, and the diagnostics screen says whether there's a fix; first fix outdoors can take up to 15 min)
+- "no position yet" in detail view → that meter hasn't been heard since the GPS got a fix (the `S` number on the list view is satellites used in the fix, and the diagnostics screen says whether there's a fix). Switched on outdoors, the first fix takes about 30 s and the track starts about 10 s later; indoors or in a pocket between houses it takes minutes, so switch on a minute or two before leaving, by a window. The GPS forgets the satellites when switched off. Sending it orbit data, the time and a position (assisted GPS) was tried: its firmware (URANUS5 V5.3.0.0) acknowledges them but ignores them, even with current data
 - "flash error: no saving" → send `FORMAT`
