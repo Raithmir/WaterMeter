@@ -191,7 +191,7 @@ Once the gateway is on your Wi-Fi, Home Assistant finds it. Go to Settings → D
 
 For daily or monthly water use, create a **Utility Meter** helper in Home Assistant based on Water Total. You can also add Water Total to the Energy dashboard as water consumption.
 
-**Heltec screen:** short press **PRG** to switch between the reading, diagnostics and alarm pages. Long press to turn the screen off or on.
+**Heltec screen:** short press **PRG** to switch between the reading, diagnostics and alarm pages. Long press to turn the screen off or on. The screen turns itself off 5 minutes after boot or the last press; change this with **Screen Timeout** in Home Assistant (0 keeps it on).
 
 **XIAO light:** blinks each time a reading arrives from your meter, about every 8 seconds.
 

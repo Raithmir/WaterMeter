@@ -52,6 +52,10 @@ globals:
     type: bool
     restore_value: false
     initial_value: 'true'
+  - id: display_wake_ms  # last button press, or boot; the screen timeout counts from here
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
 
 spi:
   clk_pin: GPIO9
@@ -189,6 +193,7 @@ binary_sensor:
         max_length: 800ms
         then:
           - lambda: |-
+              id(display_wake_ms) = millis();
               if (!id(display_on)) {
                 id(display_on) = true;
                 id(oled).turn_on();
@@ -200,6 +205,7 @@ binary_sensor:
         max_length: 5000ms
         then:
           - lambda: |-
+              id(display_wake_ms) = millis();
               id(display_on) = !id(display_on);
               if (id(display_on)) id(oled).turn_on();
               else id(oled).turn_off();
@@ -211,6 +217,30 @@ interval:
           // Never heard since boot counts from boot (last_telegram_ms starts at 0), so a
           // gateway that can't hear the meter after a restart still goes stale.
           id(water_stale).publish_state((millis() - id(last_telegram_ms)) > 21600000);  // 6 hours
+  - interval: 10s
+    then:
+      - lambda: |-
+          // Screen off after the timeout, so it doesn't stay on after a restart. 0 = never.
+          float mins = id(screen_timeout).state;
+          if (id(display_on) && mins > 0 &&
+              (millis() - id(display_wake_ms)) > (uint32_t) (mins * 60000)) {
+            id(display_on) = false;
+            id(oled).turn_off();
+          }
+
+number:
+  - platform: template
+    id: screen_timeout
+    name: "Screen Timeout"
+    icon: mdi:monitor-off
+    entity_category: config
+    unit_of_measurement: min
+    min_value: 0
+    max_value: 120
+    step: 1
+    initial_value: 5
+    optimistic: true
+    restore_value: true
 
 switch:
   - platform: gpio
